@@ -5,7 +5,9 @@ from PIL import Image, ImageDraw
 
 import time
 
-import cv
+import det
+import camera
+import cv2
 
 
 def draw(images, labels, boxes, scores, thrh = 0.6):
@@ -25,16 +27,15 @@ def draw(images, labels, boxes, scores, thrh = 0.6):
 
 
 def main():
-    """main
-    """
-    im_file = R'.\test.png'
+    '''
+    im_file = R'./test.png'
     device = 'cpu' # cpu, cuda:0
 
-    print('CV Model Init ----------------------------------------')
+    print('DET Model Init ----------------------------------------')
 
-    model = cv.Model().to(device)
+    model = det.Model().to(device)
 
-    print('CV Model Init Done')
+    print('DET Model Init Done')
 
 
     print('Runtime ----------------------------------------')
@@ -57,7 +58,14 @@ def main():
     labels, boxes, scores = output
 
     draw([im_pil], labels, boxes, scores)
+    '''
+    loc = camera.Localize()
 
+    debugImg = cv2.imread('test3.png')
+    loc.localize(debugImg)
+
+    cv2.imshow('Debug', debugImg)
+    cv2.waitKey(0)
 
 if __name__ == '__main__':
     main()
