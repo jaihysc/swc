@@ -59,7 +59,7 @@ class UI:
         img = img.subsample(IMG_SCALE)
         imgLabel = ttk.Label(frm, image=img)
         imgLabel.grid(column=1, row=0)
-        imgLabel.bind('<Motion> <Button-1>', lambda e: self.imgClick(e))
+        imgLabel.bind('<Button-1>', lambda e: self.imgClick(e))
 
         pickLabel = ttk.Label(frm, text='Pick point')
 
@@ -107,7 +107,7 @@ class UI:
             img = img.subsample(IMG_SCALE)
             self.img = img
             self.imgLabel.configure(image=self.img)
-        except (socket.timeout, ConnectionAbortedError, ConnectionResetError):
+        except (socket.timeout, ConnectionRefusedError, ConnectionAbortedError, ConnectionResetError):
             pass
 
     # Events

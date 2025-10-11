@@ -20,12 +20,6 @@ def main():
     DEVICE = 'cpu' # cpu, cuda:0
     INF_TH = 0.5 # Inference threshold
 
-    print('Load debug connection')
-    dbgSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    dbgSocket.bind(('', DEBUG_PORT))
-    dbgSocket.listen(1)
-    dbgSocket.settimeout(0.5)
-
     print('Load DET Model')
     model = det.Model().to(DEVICE)
 
@@ -88,22 +82,27 @@ def main():
 
         # Handle debug messages
         try:
-            conn, addr = dbgSocket.accept()
-            with conn:
-                # Receive config
-                cfgBytes = conn.recv(24)
-                x0, y0, x1, y1, x2, y2 = struct.unpack('>IIIIII', cfgBytes)
-                imgPt = np.array([
-                    [x0, y0],
-                    [x1, y1],
-                    [x2, y2]
-                ], np.float32)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as dbgSocket:
+                dbgSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                dbgSocket.settimeout(1)
+                dbgSocket.bind(('', DEBUG_PORT))
+                dbgSocket.listen(1)
+                conn, addr = dbgSocket.accept()
+                with conn:
+                    # Receive config
+                    cfgBytes = conn.recv(24)
+                    x0, y0, x1, y1, x2, y2 = struct.unpack('>IIIIII', cfgBytes)
+                    imgPt = np.array([
+                        [x0, y0],
+                        [x1, y1],
+                        [x2, y2]
+                    ], np.float32)
 
-                # Read the debug image and send it
-                with open(DEBUG_IMAGE, 'rb') as file:
-                    imgBytes = file.read()
-                conn.sendall(imgBytes)
-            print(f'[{iteration}] Update debug connection')
+                    # Read the debug image and send it
+                    with open(DEBUG_IMAGE, 'rb') as file:
+                        imgBytes = file.read()
+                    conn.sendall(imgBytes)
+                print(f'[{iteration}] Update debug connection')
         except socket.timeout:
             print(f'[{iteration}] Debug connection timeout')
         except (ConnectionAbortedError, ConnectionResetError):
