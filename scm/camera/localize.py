@@ -20,7 +20,7 @@ class Localize:
     |
     v
     '''
-    def localize(self, debugImg) -> None:
+    def localize(self, imgPt, deprojPoint, debugImg) -> None:
         '''
         '''
         worldPt = np.array([
@@ -28,13 +28,12 @@ class Localize:
             [1, 0, 0], # Top right
             [0, 1, 0]  # Bottom left
         ], np.float32)
-        imgPt = np.array([
-            [519, 615],
-            [735, 727],
-            [252, 734]
-        ], np.float32)
-
-        deprojPoint = [376, 518]
+        # imgPt = np.array([
+        #     [519, 615],
+        #     [735, 727],
+        #     [252, 734]
+        # ], np.float32)
+        # deprojPoint = [376, 518]
 
         p3pValid = self.solveP3P(worldPt, imgPt)
         if p3pValid:
@@ -50,12 +49,16 @@ class Localize:
         # Debug output
         FONT_ID = cv2.FONT_HERSHEY_PLAIN
         FONT_COLOR = (0, 0, 255)
-        FONT_SIZE = 1.3
-        FONT_THICKNESS = 1
+        FONT_SIZE = 2.8
+        FONT_THICKNESS = 2
 
         img = debugImg
-        cv2.putText(img, f'Reprojection error {errorReprojection}',          (0, 30), FONT_ID, FONT_SIZE, FONT_COLOR, FONT_THICKNESS)
-        cv2.putText(img, f'Deproject {worldPoint}, Error {errorDistance}', (0, 60), FONT_ID, FONT_SIZE, FONT_COLOR, FONT_THICKNESS)
+        if p3pValid:
+            cv2.putText(img, f'Reprojection error {errorReprojection}', (0, 40),  FONT_ID, FONT_SIZE, FONT_COLOR, FONT_THICKNESS)
+            cv2.putText(img, f'Deproject {worldPoint}',                 (0, 80),  FONT_ID, FONT_SIZE, FONT_COLOR, FONT_THICKNESS)
+            cv2.putText(img, f'Error {errorDistance}',                  (0, 120), FONT_ID, FONT_SIZE, FONT_COLOR, FONT_THICKNESS)
+        else:
+            cv2.putText(img, f'P3P Invalid',                            (0, 40),  FONT_ID, FONT_SIZE, FONT_COLOR, FONT_THICKNESS)
 
         # X Y Z axis
         imgPtInt = imgPt.astype(np.int32)
@@ -65,16 +68,17 @@ class Localize:
         # cv2.arrowedLine(img, imgPtInt[0], res.astype(np.int32), (0, 0, 255), 2)
 
         # X Y components of deprojected point
-        res, _ = self.projectPoint([worldPoint[0], 0, 0])
-        cv2.arrowedLine(img, imgPtInt[0], res.astype(np.int32), (220, 140, 40), 2) # Line for X axis
-        res, _ = self.projectPoint([0, worldPoint[1], 0])
-        cv2.arrowedLine(img, imgPtInt[0], res.astype(np.int32), (40, 255, 160), 2) # Line for Y axis
+        if p3pValid:
+            res, _ = self.projectPoint([worldPoint[0], 0, 0])
+            cv2.arrowedLine(img, imgPtInt[0], res.astype(np.int32), (220, 140, 40), 2) # Line for X axis
+            res, _ = self.projectPoint([0, worldPoint[1], 0])
+            cv2.arrowedLine(img, imgPtInt[0], res.astype(np.int32), (40, 255, 160), 2) # Line for Y axis
 
-        # Bottom right corner
-        res, _ = self.projectPoint([1, 1, 0])
-        cv2.drawMarker(img, res.astype(np.int32), (255, 255, 0), cv2.MARKER_CROSS, 16, 1)
-        # Deprojected point
-        cv2.drawMarker(img, deprojPoint, (0, 0, 255), cv2.MARKER_CROSS, 16, 1)
+            # Bottom right corner
+            res, _ = self.projectPoint([1, 1, 0])
+            cv2.drawMarker(img, res.astype(np.int32), (255, 255, 0), cv2.MARKER_CROSS, 16, 1)
+            # Deprojected point
+            cv2.drawMarker(img, deprojPoint, (0, 0, 255), cv2.MARKER_CROSS, 16, 1)
 
         return deprojPoint
 
@@ -103,7 +107,7 @@ class Localize:
         Returns [X, Y, distance]
         '''
         worldPt = np.array([worldPt], np.float32).T # Transpose the vector
-        res = np.linalg.matmul(camera.CAM_MAT, np.linalg.matmul(self.rmat, worldPt) + self.tvec)
+        res = np.matmul(camera.CAM_MAT, np.matmul(self.rmat, worldPt) + self.tvec)
         distance = res[2]
 
         res2 = res[0:2]
@@ -121,7 +125,7 @@ class Localize:
         for _ in range(8):
             point = imgPt * distance
 
-            res = np.linalg.matmul(self.rmatInv, np.linalg.matmul(camera.CAM_MAT_INV, point) - self.tvec)
+            res = np.matmul(self.rmatInv, np.matmul(camera.CAM_MAT_INV, point) - self.tvec)
             errorDistance = float(res[2]) # Z should be 0, since worldPt Z is 0
 
             if abs(errorDistance) < 0.01:

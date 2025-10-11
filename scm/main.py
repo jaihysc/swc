@@ -7,20 +7,34 @@ import torchvision.transforms as T
 from PIL import Image
 
 import subprocess
+import socket
+import struct
 
 import det
 import camera
 
 def main():
+    DEBUG_PORT = 25565
     CAMERA_IMAGE = 'camera_capture.png'
     DEBUG_IMAGE = 'debug_capture.png'
     DEVICE = 'cpu' # cpu, cuda:0
     INF_TH = 0.5 # Inference threshold
 
+    print('Load debug connection')
+    dbgSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    dbgSocket.bind(('', DEBUG_PORT))
+    dbgSocket.listen(1)
+    dbgSocket.settimeout(0.5)
+
     print('Load DET Model')
     model = det.Model().to(DEVICE)
 
     print('Load localization')
+    imgPt = np.array([
+        [0, 0],
+        [0, 0],
+        [0, 0]
+    ], np.float32)
     loc = camera.Localize()
 
     print('Runtime ----------------------------------------')
@@ -50,9 +64,12 @@ def main():
         labels, boxes, scores = output
         print(f'[{iteration}] Ran inference')
 
+
         # Coordinate transform
         debugImg = cv2.imread(CAMERA_IMAGE)
-        loc.localize(debugImg)
+        deprojPoint = [376, 518]
+        loc.localize(imgPt, deprojPoint, debugImg)
+
 
         # Draw inference boxes
         scr = scores[0]
@@ -67,6 +84,32 @@ def main():
         # cv2.imshow('Debug', debugImg)
         # cv2.waitKey(0)
         print(f'[{iteration}] Write debug image')
+
+
+        # Handle debug messages
+        try:
+            conn, addr = dbgSocket.accept()
+            with conn:
+                # Receive config
+                cfgBytes = conn.recv(24)
+                x0, y0, x1, y1, x2, y2 = struct.unpack('>IIIIII', cfgBytes)
+                imgPt = np.array([
+                    [x0, y0],
+                    [x1, y1],
+                    [x2, y2]
+                ], np.float32)
+
+                # Read the debug image and send it
+                with open(DEBUG_IMAGE, 'rb') as file:
+                    imgBytes = file.read()
+                conn.sendall(imgBytes)
+            print(f'[{iteration}] Update debug connection')
+        except socket.timeout:
+            print(f'[{iteration}] Debug connection timeout')
+        except (ConnectionAbortedError, ConnectionResetError):
+            print(f'[{iteration}] Debug connection aborted')
+        except struct.error:
+            print(f'[{iteration}] Failed to parse debug config')
 
         iteration += 1
 
