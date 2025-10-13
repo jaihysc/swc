@@ -1,2 +1,10 @@
 .venv
+.vscode
 __pycache__
+
+# CMake build directory
+mcm/build/
+
+# Debug/calibration images
+scm/**/*.png
+scm_dbg/**/*.png
