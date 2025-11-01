@@ -11,8 +11,8 @@ static const uint8_t statusMapping[] =
     0b10101010, // STATUS_TRANSIT
 };
 
-static StatusCode nextStatus = STATUS_OK;
-static StatusCode currentStatus = STATUS_OK;
+static StatusCode nextStatus = STATUS_IDLE;
+static StatusCode currentStatus = STATUS_IDLE;
 static uint8_t position = 0;
 
 void statusSet(StatusCode status) {
