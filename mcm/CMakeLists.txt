@@ -31,6 +31,7 @@ project(mcm C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 add_executable(mcm
+    dac.c
     main.c
     status.c
 )
@@ -41,6 +42,7 @@ target_link_libraries(mcm
     pico_btstack_cyw43
     pico_cyw43_arch_none
     hardware_adc
+    hardware_pwm
 )
 
 target_include_directories(mcm PRIVATE

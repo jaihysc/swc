@@ -1,9 +1,12 @@
-#include <stdio.h>
 #include <btstack.h>
 #include <pico/cyw43_arch.h>
 #include <pico/btstack_cyw43.h>
-#include <hardware/adc.h>
 #include <pico/stdlib.h>
+#include <hardware/adc.h>
+#include <stdio.h>
+
+#include "dac.h"
+#include "hw_config.h"
 #include "profile.h"
 #include "status.h"
 
@@ -112,6 +115,7 @@ static int attWrite(hci_con_handle_t connection_handle, uint16_t att_handle, uin
 // Periodic update
 
 static void update(struct btstack_timer_source* ts) {
+    /*
     // Count sense oscillator edge transitions
     int16_t counts = 0;
     bool valPrev = gpio_get(15);
@@ -148,8 +152,6 @@ static void update(struct btstack_timer_source* ts) {
         uData.soscDetectIter = 0;
     }
 
-
-
     // Pulse LED if detected
     if (detected) {
         gpio_set_mask(1);
@@ -166,6 +168,7 @@ static void update(struct btstack_timer_source* ts) {
     else {
         statusSet(STATUS_IDLE);
     }
+    */
 
     statusUpdate();
 
@@ -182,12 +185,22 @@ int main() {
         return 1; // Can't use LED if this fails
     }
 
-    gpio_init(0);
-    gpio_set_dir(0, GPIO_OUT);
+
+    // Initialize GPIO
+    gpio_init(GPIO_STATUS_LED);
+    gpio_set_dir(GPIO_STATUS_LED, GPIO_OUT);
     gpio_init(15);
     gpio_set_dir(15, GPIO_IN);
     gpio_init(12);
     gpio_set_dir(12, GPIO_IN);
+
+    gpio_set_function(GPIO_DAC_OUT_0, GPIO_FUNC_PWM);
+    gpio_set_function(GPIO_DAC_OUT_1, GPIO_FUNC_PWM);
+
+    adc_init();
+    adc_gpio_init(GPIO_DAC_SENSE_0);
+    adc_gpio_init(GPIO_DAC_SENSE_1);
+
 
     // Initialize bluetooth
     l2cap_init();
@@ -208,8 +221,16 @@ int main() {
         statusSet(STATUS_BT_ERR);
     }
 
+
+    // Test
+    dacSet(0, 3724); // 3/3.3 * 2^12
+    dacSet(1, 3475);
+
+
+    // Main loop
     // In this loop the Bluetooth events will run
     while (1) {
+        dacUpdate();
     }
     return 0;
 }

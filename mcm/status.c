@@ -1,4 +1,6 @@
-#include <pico/cyw43_arch.h>
+#include <hardware/gpio.h>
+
+#include "hw_config.h"
 #include "status.h"
 
 // Bits determine LED periodic pattern
@@ -27,6 +29,6 @@ void statusUpdate() {
     else {
         --position;
         bool ledOn = (statusMapping[currentStatus] >> position) & 1;
-        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, ledOn);
+        gpio_put(GPIO_STATUS_LED, ledOn);
     }
 }
