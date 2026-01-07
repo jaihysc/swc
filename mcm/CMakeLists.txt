@@ -33,6 +33,7 @@ pico_sdk_init()
 add_executable(mcm
     dac.c
     main.c
+    sosc.c
     status.c
 )
 
@@ -42,6 +43,7 @@ target_link_libraries(mcm
     pico_btstack_cyw43
     pico_cyw43_arch_none
     hardware_adc
+    hardware_clocks
     hardware_pwm
 )
 

@@ -81,6 +81,12 @@ void dacUpdate(void) {
         case DAC_INIT:
         {
             // Configure PWM hardware
+            gpio_set_function(GPIO_DAC_OUT_0, GPIO_FUNC_PWM);
+            gpio_set_function(GPIO_DAC_OUT_1, GPIO_FUNC_PWM);
+
+            adc_gpio_init(GPIO_DAC_SENSE_0);
+            adc_gpio_init(GPIO_DAC_SENSE_1);
+
             pwm_set_wrap(PWM_SLICE_DAC_OUT_0, DAC_PWM_WRAP);
             pwm_set_wrap(PWM_SLICE_DAC_OUT_1, DAC_PWM_WRAP);
 
