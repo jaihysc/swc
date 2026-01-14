@@ -11,6 +11,8 @@ static const uint8_t statusMapping[] =
     0b11101010, // STATUS_BT_ERR
     0b10000000, // STATUS_IDLE
     0b10101010, // STATUS_TRANSIT
+    0b10100000, // STATUS_SOSC_0_DET
+    0b10101000, // STATUS_SOSC_1_DET
 };
 
 static StatusCode nextStatus = STATUS_IDLE;
