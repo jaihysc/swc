@@ -43,6 +43,7 @@ int main() {
     while (1) {
         dacUpdate();
         soscUpdate();
+        statusUpdate();
     }
     return 0;
 }

@@ -93,8 +93,6 @@ static int attWrite(hci_con_handle_t connection_handle, uint16_t att_handle, uin
 
 // Periodic update
 static void update(struct btstack_timer_source* ts) {
-    statusUpdate();
-
     // Restart timer
     btstack_run_loop_set_timer(ts, HEARTBEAT_PERIOD_MS);
     btstack_run_loop_add_timer(ts);
@@ -121,6 +119,9 @@ void btInit() {
     }
 }
 #else // Bluetooth not supported
+#include "status.h"
+
 void btInit() {
+    statusSet(STATUS_IDLE);
 }
 #endif

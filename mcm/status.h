@@ -12,6 +12,6 @@ typedef enum
 } StatusCode;
 
 void statusSet(StatusCode status);
-void statusUpdate(); // Call priodically in main loop
+void statusUpdate();
 
 #endif // STATUS_H
