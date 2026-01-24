@@ -49,8 +49,6 @@ static void packetHandler(uint8_t packet_type, uint16_t channel, uint8_t *packet
 
                 gap_advertisements_set_data(sizeof(btAdvertisement), btAdvertisement);
                 gap_advertisements_enable(1);
-
-                statusSet(STATUS_IDLE);
             }
             break;
 
@@ -119,9 +117,6 @@ void btInit() {
     }
 }
 #else // Bluetooth not supported
-#include "status.h"
-
 void btInit() {
-    statusSet(STATUS_IDLE);
 }
 #endif

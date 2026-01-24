@@ -9,11 +9,11 @@
 
 enum
 {
-    SOSC_DET_TH         = 10,     // Number of measurements in threshold (votes), of total iterations, to declare detected
-    SOSC_MEAS_ITER      = 16,     // Number of measurements (iterations) before making decision
+    SOSC_DET_TH         = 7,     // Number of measurements in threshold (votes), of total iterations, to declare detected
+    SOSC_MEAS_ITER      = 8,     // Number of measurements (iterations) before making decision
     SOSC_MEAS_TIME      = 250000, // Measurement duration [us]
-    SOSC_COUNT_MIN_TH_0 = 10,     // For a measurement: vote threshold: 10 counts  =  40 Hz / clkdiv * meas_time
-    SOSC_COUNT_MAX_TH_0 = 100,    // For a measurement: vote threshold: 100 counts = 400 Hz / clkdiv * meas_time
+    SOSC_COUNT_MIN_TH_0 = 5,      // For a measurement: vote threshold: 5 counts  =  20 Hz / clkdiv * meas_time
+    SOSC_COUNT_MAX_TH_0 = 50,     // For a measurement: vote threshold: 50 counts = 200 Hz / clkdiv * meas_time
                                   // Significant frequency changes from charger ping ignored
     SOSC_COUNT_MIN_TH_1 = 100,
     SOSC_COUNT_MAX_TH_1 = 1000,
@@ -28,80 +28,135 @@ typedef struct // Data for one oscillator
     uint16_t countsPrev;
     uint8_t detectVote;
     uint8_t iter;
-    bool detected;
-} SoscData;
+    uint8_t enable    : 1;
+    uint8_t active    : 1; // Currently performing measurement
+    uint8_t detected  : 1; // Object detected
+    uint8_t prevValid : 1; // countsPrev value is valid
+    uint8_t reserved  : 4;
+} Sosc;
 
 typedef enum
 {
     SOSC_INIT = 0,
-    SOSC_MEAS,
+    SOSC_MEAS_INIT,
+    SOSC_MEAS_WAIT,
+    SOSC_MEAS_DONE,
 } SoscState;
 
 typedef struct
 {
-    SoscData sosc[SOSC_COUNT];
+    Sosc sosc[SOSC_COUNT];
     SoscState state;
-    bool hasCountsPrev;
     uint8_t soscIdx;
-} Sosc;
+} SoscFsm;
 
-static Sosc sosc;
+static SoscFsm soscFsm;
+
+void soscEnable(uint8_t oscIdx, bool enable) {
+    soscFsm.sosc[oscIdx].enable = enable;
+}
+
+bool soscActive(uint8_t oscIdx) {
+    return soscFsm.sosc[oscIdx].active;
+}
+
+bool soscDetected(uint8_t oscIdx) {
+    return soscFsm.sosc[oscIdx].detected;
+}
+
+bool soscCalibrated(uint8_t oscIdx) {
+    return soscFsm.sosc[oscIdx].prevValid;
+}
 
 void soscUpdate(void) {
-    Sosc* fsm = &sosc;
-
-    // Pulse LED if detected
-    if (fsm->sosc[1].detected) {
-        statusSet(STATUS_SOSC_1_DET);
-    }
-    else if (fsm->sosc[0].detected) {
-        statusSet(STATUS_SOSC_0_DET);
-    }
-    else {
-        statusSet(STATUS_IDLE);
-    }
-
+    SoscFsm* fsm = &soscFsm;
     switch (fsm->state) {
         case SOSC_INIT:
         {
-            pwm_config cfg = pwm_get_default_config();
-            pwm_config_set_clkdiv_mode(&cfg, PWM_DIV_B_RISING);
-            pwm_config_set_clkdiv(&cfg, SOSC_CLKDIV_0);
-            pwm_init(PWM_SLICE_SOSC_0, &cfg, false);
+            // Default to disabled. For PNP means base at logic high
+            gpio_init(GPIO_SOSC_EN_0);
+            gpio_init(GPIO_SOSC_EN_1);
+            gpio_set_dir(GPIO_SOSC_EN_0, GPIO_OUT);
+            gpio_set_dir(GPIO_SOSC_EN_1, GPIO_OUT);
 
-            pwm_config_set_clkdiv(&cfg, SOSC_CLKDIV_1);
-            pwm_init(PWM_SLICE_SOSC_1, &cfg, false);
-
-            gpio_set_function(GPIO_SOSC_0, GPIO_FUNC_PWM);
-            gpio_set_function(GPIO_SOSC_1, GPIO_FUNC_PWM);
-
-            fsm->sosc[0].startTime = time_us_64();
-            pwm_set_enabled(PWM_SLICE_SOSC_0, true);
-
-            fsm->sosc[1].startTime = time_us_64();
-            pwm_set_enabled(PWM_SLICE_SOSC_1, true);
-
-            fsm->state = SOSC_MEAS;
+            fsm->state = SOSC_MEAS_INIT;
             break;
         }
 
-        case SOSC_MEAS:
+        case SOSC_MEAS_INIT:
+        {
+            bool soscEn0 = false;
+            bool soscEn1 = false;
+            if (fsm->sosc[fsm->soscIdx].enable) {
+                fsm->sosc[fsm->soscIdx].active = true;
+                // Configure PWM and measure start time
+                // This needs to be set each time since PWM channels are shared with other FSMs
+                if (fsm->soscIdx == 0) {
+                    soscEn0 = true;
+
+                    pwm_config cfg = pwm_get_default_config();
+                    pwm_config_set_clkdiv_mode(&cfg, PWM_DIV_B_RISING);
+                    pwm_config_set_clkdiv(&cfg, SOSC_CLKDIV_0);
+
+                    gpio_set_function(GPIO_SOSC_OUT_0, GPIO_FUNC_PWM);
+
+                    fsm->sosc[0].startTime = time_us_64();
+                    pwm_init(PWM_SLICE_SOSC_0, &cfg, true);
+                }
+                else {
+                    soscEn1 = true;
+
+                    pwm_config cfg = pwm_get_default_config();
+                    pwm_config_set_clkdiv_mode(&cfg, PWM_DIV_B_RISING);
+                    pwm_config_set_clkdiv(&cfg, SOSC_CLKDIV_1);
+
+                    gpio_set_function(GPIO_SOSC_OUT_1, GPIO_FUNC_PWM);
+
+                    fsm->sosc[1].startTime = time_us_64();
+                    pwm_init(PWM_SLICE_SOSC_1, &cfg, true);
+                }
+
+                fsm->state = SOSC_MEAS_WAIT;
+            }
+            else {
+                // Do nothing if not enabled
+                // Place GPIO pin on high impedance
+                if (fsm->soscIdx == 0) {
+                    gpio_deinit(GPIO_SOSC_OUT_0);
+                }
+                else {
+                    gpio_deinit(GPIO_SOSC_OUT_1);
+                }
+
+                Sosc* sosc = &fsm->sosc[fsm->soscIdx];
+                sosc->detected = false;
+                sosc->active = false;
+                fsm->state = SOSC_MEAS_DONE;
+            }
+
+            // For PNP means off means base at logic high
+            gpio_put(GPIO_SOSC_EN_0, !soscEn0);
+            gpio_put(GPIO_SOSC_EN_1, !soscEn1);
+            break;
+        }
+
+        case SOSC_MEAS_WAIT:
         {
             // Count number of edge transitions during fixed time interval
-            SoscData* sosc = &fsm->sosc[fsm->soscIdx];
+            Sosc* sosc = &fsm->sosc[fsm->soscIdx];
+
+            // Load constants and increment index
             uint8_t slice;
             int16_t minTh, maxTh;
             if (fsm->soscIdx == 0) {
                 slice = PWM_SLICE_SOSC_0;
                 minTh = SOSC_COUNT_MIN_TH_0;
                 maxTh = SOSC_COUNT_MAX_TH_0;
-                fsm->soscIdx = 1;
             }
             else {
                 slice = PWM_SLICE_SOSC_1;
                 minTh = SOSC_COUNT_MIN_TH_1;
                 maxTh = SOSC_COUNT_MAX_TH_1;
-                fsm->soscIdx = 0;
             }
 
             // int32_t big enough to hold elapsed time
@@ -109,14 +164,13 @@ void soscUpdate(void) {
             if (elapsedTime >= SOSC_MEAS_TIME) {
                 pwm_set_enabled(slice, false);
                 uint16_t counts = pwm_get_counter(slice);
-                pwm_set_counter(slice, 0);
 
                 // The elapsed time may be few ms longer than SOSC_MEAS_TIME
                 // Correct counts based on elapsed time, calculate count per us, then scale by extra time
                 uint16_t countCorrection = (uint32_t)counts * (elapsedTime - SOSC_MEAS_TIME) / elapsedTime;
                 counts = counts - countCorrection;
 
-                if (fsm->hasCountsPrev) {
+                if (sosc->prevValid) {
                     int32_t countDiff = counts - sosc->countsPrev;
                     bool diffNegative = countDiff < 0;
 
@@ -135,9 +189,6 @@ void soscUpdate(void) {
                         bool detected = false;
                         if (sosc->detectVote >= SOSC_DET_TH) {
                             detected = true;
-
-                            // Update counts to avoid re-detection
-                            sosc->countsPrev = counts;
                         }
                         else if (sosc->detectVote == 0) {
                             // Update counts when certain is idle
@@ -158,13 +209,24 @@ void soscUpdate(void) {
                 else {
                     // At startup, calculate countsPrev
                     sosc->countsPrev = counts;
-                    fsm->hasCountsPrev = true;
+                    sosc->prevValid = true;
                 }
 
-                // Measure again
-                sosc->startTime = time_us_64();
-                pwm_set_enabled(slice, true);
+                fsm->state = SOSC_MEAS_DONE;
             }
+            break;
+        }
+
+        case SOSC_MEAS_DONE:
+        {
+            // Next oscillator
+            if (fsm->soscIdx == 0) {
+                fsm->soscIdx = 1;
+            }
+            else {
+                fsm->soscIdx = 0;
+            }
+            fsm->state = SOSC_MEAS_INIT;
             break;
         }
 

@@ -13,66 +13,87 @@ enum
     DAC_INT_BITS    = 12,
     DAC_FRAC_BITS   = 4,
     DAC_PWM_WRAP    = 1 << DAC_INT_BITS,
-    DAC_WAIT_CYCLES = 1 << 10,
+    DAC_WAIT_CYCLES = 1 << 6,
     DAC_LEVEL_MIN   = 0,
     DAC_LEVEL_MAX   = (((1 << DAC_INT_BITS) - 1 - 1) << DAC_FRAC_BITS) + ((1 << DAC_FRAC_BITS) - 1),
     //                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     //                Extra -1 for int code because dithering needs to use level + 1
 };
 
+typedef struct
+{
+    uint32_t fracCounter;
+    uint16_t level;
+    uint16_t target;
+    uint8_t enable   : 1;
+    uint8_t active   : 1;
+    uint8_t reserved : 6;
+} Dac;
+
 typedef enum
 {
     DAC_INIT = 0,
+    DAC_MEAS_INIT,
     DAC_MEAS_WAIT,
+    DAC_MEAS_DONE,
     DAC_WAIT,
 } DacState;
 
 typedef struct
 {
-    uint32_t fracCounter[DAC_COUNT];
+    Dac dac[DAC_COUNT];
     uint32_t waitCounter;
-    uint16_t level[DAC_COUNT];
-    uint16_t target[DAC_COUNT];
     DacState state;
     uint8_t dacIdx;
-} Dac;
+} DacFsm;
 
-static Dac dac;
+static DacFsm dacFsm;
+
+void dacEnable(uint8_t dacIdx, bool enable) {
+    dacFsm.dac[dacIdx].enable = enable;
+}
+
+bool dacActive(uint8_t dacIdx) {
+    return dacFsm.dac[dacIdx].active;
+}
 
 void dacSet(uint8_t dacIdx, uint16_t val) {
-    dac.level[dacIdx] = (val << DAC_FRAC_BITS);
-    dac.target[dacIdx] = val;
+    dacFsm.dac[dacIdx].level = (val << DAC_FRAC_BITS);
+    dacFsm.dac[dacIdx].target = val;
 }
 
 void dacUpdate(void) {
-    Dac* fsm = &dac;
+    DacFsm* fsm = &dacFsm;
 
     // Update dithering based on frac code
     // 1 frac code step = 1 cycle on PWM, assumes fracCounter incremented every clock cycle
     // When frac code counter below frac code, use code + 1
     // When frac code counter above frac code, use code
     for (int dacIdx = 0; dacIdx < DAC_COUNT; ++dacIdx) {
-        const uint16_t level = fsm->level[dacIdx];
-        const uint16_t levelInt = level >> DAC_FRAC_BITS;
-        const uint16_t levelFrac = level & ((1 << DAC_FRAC_BITS) - 1);
+        Dac* dac = &fsm->dac[dacIdx];
+        if (dac->active) {
+            const uint16_t level = dac->level;
+            const uint16_t levelInt = level >> DAC_FRAC_BITS;
+            const uint16_t levelFrac = level & ((1 << DAC_FRAC_BITS) - 1);
 
-        uint32_t fracCounter = fsm->fracCounter[dacIdx];
-        uint16_t chanLevel = levelInt;
-        ++fracCounter;
-        if (fracCounter >= (DAC_PWM_WRAP * DAC_FRAC_BITS)) {
-            fracCounter = 0;
-            chanLevel = levelInt + 1;
-        }
-        if (fracCounter >= (DAC_PWM_WRAP * levelFrac)) {
-            chanLevel = levelInt;
-        }
-        fsm->fracCounter[dacIdx] = fracCounter;
+            uint32_t fracCounter = dac->fracCounter;
+            uint16_t chanLevel = levelInt;
+            ++fracCounter;
+            if (fracCounter >= (DAC_PWM_WRAP * DAC_FRAC_BITS)) {
+                fracCounter = 0;
+                chanLevel = levelInt + 1;
+            }
+            if (fracCounter >= (DAC_PWM_WRAP * levelFrac)) {
+                chanLevel = levelInt;
+            }
+            dac->fracCounter = fracCounter;
 
-        if (dacIdx == 0) {
-            pwm_set_chan_level(PWM_SLICE_DAC_OUT_0, PWM_CHAN_DAC_OUT_0, chanLevel);
-        }
-        else {
-            pwm_set_chan_level(PWM_SLICE_DAC_OUT_1, PWM_CHAN_DAC_OUT_1, chanLevel);
+            if (dacIdx == 0) {
+                pwm_set_chan_level(PWM_SLICE_DAC_OUT_0, PWM_CHAN_DAC_OUT_0, chanLevel);
+            }
+            else {
+                pwm_set_chan_level(PWM_SLICE_DAC_OUT_1, PWM_CHAN_DAC_OUT_1, chanLevel);
+            }
         }
     }
 
@@ -80,34 +101,51 @@ void dacUpdate(void) {
     switch (fsm->state) {
         case DAC_INIT:
         {
-            // Configure PWM hardware
-            gpio_set_function(GPIO_DAC_OUT_0, GPIO_FUNC_PWM);
-            gpio_set_function(GPIO_DAC_OUT_1, GPIO_FUNC_PWM);
-
             adc_gpio_init(GPIO_DAC_SENSE_0);
             adc_gpio_init(GPIO_DAC_SENSE_1);
 
-            pwm_set_wrap(PWM_SLICE_DAC_OUT_0, DAC_PWM_WRAP);
-            pwm_set_wrap(PWM_SLICE_DAC_OUT_1, DAC_PWM_WRAP);
-
-            pwm_set_enabled(PWM_SLICE_DAC_OUT_0, true);
-            pwm_set_enabled(PWM_SLICE_DAC_OUT_1, true);
-
-            fsm->state = DAC_WAIT;
+            fsm->state = DAC_MEAS_INIT;
             break;
         }
 
-        case DAC_WAIT:
+        case DAC_MEAS_INIT:
         {
-            // Wait for output to settle
-            ++fsm->waitCounter;
-            if (fsm->waitCounter > DAC_WAIT_CYCLES) {
-                fsm->waitCounter = 0;
-                adc_select_input(ADC_DAC_SENSE_0);
-                hw_set_bits(&adc_hw->cs, ADC_CS_START_ONCE_BITS);
+            Dac* dac = &fsm->dac[fsm->dacIdx];
+            if (dac->enable) {
+                dac->active = true;
 
+                // PWMs need to be configured each iteration because it is shared with SOSC
+                pwm_config cfg = pwm_get_default_config();
+                pwm_config_set_wrap(&cfg, DAC_PWM_WRAP);
+                if (fsm->dacIdx == 0) {
+                    gpio_set_function(GPIO_DAC_OUT_0, GPIO_FUNC_PWM);
+                    adc_select_input(ADC_DAC_SENSE_0);
+
+                    pwm_init(PWM_SLICE_DAC_OUT_0, &cfg, true);
+                }
+                else {
+                    gpio_set_function(GPIO_DAC_OUT_1, GPIO_FUNC_PWM);
+                    adc_select_input(ADC_DAC_SENSE_1);
+
+                    pwm_init(PWM_SLICE_DAC_OUT_1, &cfg, true);
+                }
+
+                hw_set_bits(&adc_hw->cs, ADC_CS_START_ONCE_BITS);
                 fsm->state = DAC_MEAS_WAIT;
             }
+            else {
+                // Place GPIO pin on high impedance
+                if (fsm->dacIdx == 0) {
+                    gpio_deinit(GPIO_DAC_OUT_0);
+                }
+                else {
+                    gpio_deinit(GPIO_DAC_OUT_1);
+                }
+
+                dac->active = false;
+                fsm->state = DAC_MEAS_DONE;
+            }
+
             break;
         }
 
@@ -118,9 +156,9 @@ void dacUpdate(void) {
 
                 // Raise duty cycle if output voltage below target
                 // Decrease duty cycle if output voltage above target
-                const uint8_t dacIdx = fsm->dacIdx;
-                uint16_t level = fsm->level[dacIdx];
-                if (senseVal < fsm->target[dacIdx]) {
+                Dac* dac = &fsm->dac[fsm->dacIdx];
+                uint16_t level = dac->level;
+                if (senseVal < dac->target) {
                     if (level < DAC_LEVEL_MAX) {
                         ++level;
                     }
@@ -131,17 +169,33 @@ void dacUpdate(void) {
                     }
                 }
 
-                fsm->level[dacIdx] = level;
+                dac->level = level;
+                fsm->state = DAC_MEAS_DONE;
+            }
+            break;
+        }
 
-                if (fsm->dacIdx == 0) {
-                    adc_select_input(ADC_DAC_SENSE_1);
-                    hw_set_bits(&adc_hw->cs, ADC_CS_START_ONCE_BITS);
-                    fsm->dacIdx = 1;
-                }
-                else {
-                    fsm->dacIdx = 0;
-                    fsm->state = DAC_WAIT;
-                }
+        case DAC_MEAS_DONE:
+        {
+            if (fsm->dacIdx == 0) {
+                // Measure next DAC
+                fsm->dacIdx = 1;
+                fsm->state = DAC_MEAS_INIT;
+            }
+            else {
+                fsm->dacIdx = 0;
+                fsm->state = DAC_WAIT; // Done measurements, now wait
+            }
+            break;
+        }
+
+        case DAC_WAIT:
+        {
+            // Wait for output to settle
+            ++fsm->waitCounter;
+            if (fsm->waitCounter >= DAC_WAIT_CYCLES) {
+                fsm->waitCounter = 0;
+                fsm->state = DAC_MEAS_INIT;
             }
             break;
         }
@@ -149,6 +203,7 @@ void dacUpdate(void) {
         default:
         {
             fsm->state = DAC_INIT;
+            break;
         }
     }
 }

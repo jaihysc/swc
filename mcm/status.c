@@ -13,10 +13,11 @@ static const uint8_t statusMapping[] =
 {
     0b00000001, // STATUS_BT_INIT
     0b00000011, // STATUS_BT_ERR
+    0b00000111, // STATUS_CAL
     0b00000000, // STATUS_IDLE
-    0b11111110, // STATUS_TRANSIT
-    0b00000010, // STATUS_SOSC_0_DET
-    0b00000110, // STATUS_SOSC_1_DET
+    0b00000010, // STATUS_SWEEP_THETA
+    0b00000110, // STATUS_SWEEP_RADIUS
+    0b00001110, // STATUS_CHARGING
 };
 
 
@@ -30,6 +31,7 @@ enum
 typedef enum
 {
     LED_INIT = 0,
+    LED_UPDATE,
     LED_ON_WAIT,
     LED_OFF_WAIT,
     LED_CYCLE_WAIT,
@@ -57,6 +59,15 @@ void statusUpdate() {
     int32_t elapsedTime = (int32_t)(time_us_64() - fsm->startTime);
     switch (fsm->state) {
         case LED_INIT:
+        {
+            gpio_init(GPIO_STATUS_LED);
+            gpio_set_dir(GPIO_STATUS_LED, GPIO_OUT);
+
+            fsm->state = LED_UPDATE;
+            break;
+        }
+
+        case LED_UPDATE:
         {
             bool ledOn = true;
             if (fsm->position >= 0) { // If position == -1, always blink to mark start of new pattern
