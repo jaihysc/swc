@@ -1,21 +1,13 @@
 #ifndef SOSC_H
 #define SOSC_H
 
-// Enable/disable oscillator
-// To disable, wait until soscActive returns false
-void soscEnable(uint8_t oscIdx, bool enable);
+// Configures hardware
+void soscInit(void);
 
-// If oscillator is active (enabled)
-bool soscActive(uint8_t oscIdx);
+// Determines oscillator frequency when no phones present
+bool soscCalibrate(uint8_t soscIdx);
 
-// If phone was detected
-bool soscDetected(uint8_t oscIdx);
-
-// If oscillator base frequency has been determined
-// Objects are detected if frequency differs from base significantly
-bool soscCalibrated(uint8_t oscIdx);
-
-// Measures sense oscillators to detect objects
-void soscUpdate(void);
+// Measures sense oscillator frequency to detect objects
+bool soscDetect(bool* detected, uint8_t soscIdx);
 
 #endif // SOSC_H

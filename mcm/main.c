@@ -6,6 +6,7 @@
 #include "control.h"
 #include "bt.h"
 #include "dac.h"
+#include "motor.h"
 #include "hw_config.h"
 #include "sosc.h"
 #include "status.h"
@@ -28,40 +29,31 @@ int main() {
     adc_init();
 
     btInit();
+    soscInit();
 
     // Main loop
     // In this loop the Bluetooth events will run
-    ControlState controlState = CONTROL_INIT;
-
+    ControlState controlState = CONTROL_IDLE_ENTER; //CONTROL_CAL_ENTER;
+    dacSet(0, 498); // 0.4 V
+    dacEnable(0, true);
     while (1) {
-        dacUpdate();
-        soscUpdate();
         statusUpdate();
+        dacUpdate();
+        motorUpdate();
 
         switch (controlState) {
             // Calibrate
-            case CONTROL_INIT:
+            case CONTROL_CAL_ENTER:
             {
-                statusSet(STATUS_CAL);
-
-                soscEnable(0, true);
+                statusSet(STATUS_CAL_0);
                 controlState = CONTROL_CAL_0;
                 break;
             }
 
             case CONTROL_CAL_0:
             {
-                if (soscCalibrated(0)) {
-                    soscEnable(0, false);
-                    controlState = CONTROL_CAL_1_ENTER;
-                }
-                break;
-            }
-
-            case CONTROL_CAL_1_ENTER:
-            {
-                if (!soscActive(0)) {
-                    soscEnable(1, true);
+                if (soscCalibrate(0)) {
+                    statusSet(STATUS_CAL_1);
                     controlState = CONTROL_CAL_1;
                 }
                 break;
@@ -69,8 +61,7 @@ int main() {
 
             case CONTROL_CAL_1:
             {
-                if (soscCalibrated(1)) {
-                    soscEnable(1, false);
+                if (soscCalibrate(1)) {
                     controlState = CONTROL_IDLE_ENTER;
                 }
                 break;
@@ -79,9 +70,9 @@ int main() {
             // Runtime
             case CONTROL_IDLE_ENTER:
             {
-                if (!dacActive(1) && !soscActive(1)) {
-                    dacEnable(0, true);
-                    soscEnable(0, true);
+                // if (!dacActive(1)) {
+                if (motorReady(0)) {
+                    motorMove(0, 5000); // Test
 
                     statusSet(STATUS_IDLE);
                     controlState = CONTROL_IDLE;
@@ -91,32 +82,39 @@ int main() {
 
             case CONTROL_IDLE:
             {
-                if (soscDetected(0)) {
-                    dacEnable(0, false);
-                    soscEnable(0, false);
-                    controlState = CONTROL_SWEEP_THETA_ENTER;
+                if (motorReady(0)) {
+                    motorMove(0, -5000); // Test
+                    controlState = CONTROL_IDLE_ENTER;
                 }
+                // bool detected;
+                // if (soscDetect(&detected, 0)) {
+                //     if (detected) {
+                //         dacEnable(0, false);
+                //         controlState = CONTROL_SWEEP_THETA_ENTER;
+                //     }
+                // }
                 break;
             }
 
             case CONTROL_SWEEP_THETA_ENTER:
             {
-                if (!dacActive(0) && !soscActive(0)) {
-                    dacEnable(1, true);
-                    soscEnable(1, true);
+                // if (!dacActive(0)) {
+                //     dacEnable(1, true);
 
-                    statusSet(STATUS_SWEEP_THETA);
-                    controlState = CONTROL_SWEEP_THETA;
-                }
+                //     statusSet(STATUS_SWEEP_THETA);
+                //     controlState = CONTROL_SWEEP_THETA;
+                // }
                 break;
             }
 
             case CONTROL_SWEEP_THETA:
             {
-                if (soscDetected(1)) {
-                    dacEnable(1, false);
-                    soscEnable(1, false);
-                    controlState = CONTROL_IDLE_ENTER;
+                bool detected;
+                if (soscDetect(&detected, 1)) {
+                    if (detected) {
+                        dacEnable(1, false);
+                        controlState = CONTROL_CAL_ENTER;
+                    }
                 }
                 break;
             }
@@ -133,7 +131,7 @@ int main() {
 
             default:
             {
-                controlState = CONTROL_INIT;
+                controlState = CONTROL_CAL_ENTER;
                 break;
             }
         }

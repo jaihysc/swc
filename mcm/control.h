@@ -7,7 +7,7 @@
 typedef enum
 {
     // Startup calibration
-    CONTROL_INIT = 0,
+    CONTROL_CAL_ENTER = 0,
     CONTROL_CAL_0,
     CONTROL_CAL_1_ENTER,
     CONTROL_CAL_1,

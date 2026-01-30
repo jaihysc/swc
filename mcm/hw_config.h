@@ -34,6 +34,22 @@ enum
     GPIO_DAC_SENSE_0    = 28, // ADC2
     GPIO_DAC_OUT_1      = 15,
     GPIO_DAC_SENSE_1    = 27, // ADC1
+    GPIO_MOT_RST        = 8,
+    GPIO_MOT_EN         = 14,
+    GPIO_MOT_SLP_0      = 17,
+    GPIO_MOT_MODE_0     = 18,
+    GPIO_MOT_MS3_0      = 19,
+    GPIO_MOT_MS2_0      = 20,
+    GPIO_MOT_MS1_0      = 21,
+    GPIO_MOT_STEP_0     = 22,
+    GPIO_MOT_DIR_0      = 26,
+    GPIO_MOT_SLP_1      = 6,
+    GPIO_MOT_MODE_1     = 7,
+    GPIO_MOT_MS3_1      = 9,
+    GPIO_MOT_MS2_1      = 10,
+    GPIO_MOT_MS1_1      = 11,
+    GPIO_MOT_STEP_1     = 12,
+    GPIO_MOT_DIR_1      = 13,
 
     PWM_SLICE_SOSC_0    = 1,
     PWM_SLICE_SOSC_1    = 0, // Slice 0 shared between sosc1 and dac0

@@ -40,6 +40,7 @@ add_executable(mcm
     bt.c
     dac.c
     main.c
+    motor.c
     sosc.c
     status.c
 )
