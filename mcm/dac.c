@@ -12,19 +12,22 @@ enum
     DAC_COUNT       = 2,
     DAC_INT_BITS    = 12,
     DAC_FRAC_BITS   = 4,
+
     DAC_PWM_WRAP    = 1 << DAC_INT_BITS,
     DAC_WAIT_CYCLES = 1 << 6,
     DAC_LEVEL_MIN   = 0,
     DAC_LEVEL_MAX   = (((1 << DAC_INT_BITS) - 1 - 1) << DAC_FRAC_BITS) + ((1 << DAC_FRAC_BITS) - 1),
     //                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     //                Extra -1 for int code because dithering needs to use level + 1
+    DAC_READY_TH    = 125, // 0.1 Volt = Threshold / 2^12 * 3.3
 };
 
 typedef struct
 {
     uint32_t fracCounter;
-    uint16_t level;
-    uint16_t target;
+    uint16_t level;   // PWM setting
+    uint16_t target;  // Target voltage
+    uint16_t voltage; // Last output measurement, Volts = voltage / 2^12 * 3.3
     uint8_t enable   : 1;
     uint8_t active   : 1;
     uint8_t reserved : 6;
@@ -55,6 +58,16 @@ void dacEnable(uint8_t dacIdx, bool enable) {
 
 bool dacActive(uint8_t dacIdx) {
     return dacFsm.dac[dacIdx].active;
+}
+
+bool dacReady(uint8_t dacIdx) {
+    Dac* dac = &dacFsm.dac[dacIdx];
+
+    int32_t delta = (int32_t)dac->voltage - (int32_t)dac->target;
+    if (delta < 0) {
+        delta = -delta;
+    }
+    return delta < DAC_READY_TH;
 }
 
 void dacSet(uint8_t dacIdx, uint16_t val) {
@@ -152,13 +165,14 @@ void dacUpdate(void) {
         case DAC_MEAS_WAIT:
         {
             if (adc_hw->cs & ADC_CS_READY_BITS) {
-                uint16_t senseVal = adc_hw->result; // Voltage = result / 2^12
+                Dac* dac = &fsm->dac[fsm->dacIdx];
+
+                dac->voltage = adc_hw->result;
 
                 // Raise duty cycle if output voltage below target
                 // Decrease duty cycle if output voltage above target
-                Dac* dac = &fsm->dac[fsm->dacIdx];
                 uint16_t level = dac->level;
-                if (senseVal < dac->target) {
+                if (dac->voltage < dac->target) {
                     if (level < DAC_LEVEL_MAX) {
                         ++level;
                     }

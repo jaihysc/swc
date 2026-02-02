@@ -11,6 +11,8 @@ typedef enum
     STATUS_SWEEP_THETA,
     STATUS_SWEEP_RADIUS,
     STATUS_CHARGING,
+    STATUS_RESET_RADIUS,
+    STATUS_RESET_THETA,
 } StatusCode;
 
 void statusSet(StatusCode status);

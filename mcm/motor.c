@@ -54,6 +54,12 @@ void motorMove(uint8_t motIdx, int32_t steps) {
     motorFsm.motor[motIdx].target = steps;
 }
 
+bool motorMoveHome(uint8_t motIdx) {
+    int32_t pos = motorFsm.motor[motIdx].position;
+    motorFsm.motor[motIdx].target = -1 * pos;
+    return pos == 0;
+}
+
 void motorUpdate(void) {
     MotorFsm* fsm = &motorFsm;
     switch (fsm->state) {

@@ -26,6 +26,7 @@ enum
     ADC_DAC_SENSE_1     = GPIO_DAC_SENSE_1 - 26,
 #else // Pico 1 or RP2040
     GPIO_STATUS_LED     = 25,
+    GPIO_CHARGING       = 2,
     GPIO_SOSC_OUT_0     = 3, // Board rev2 incorrectly has this on GPIO 4
     GPIO_SOSC_EN_0      = 5,
     GPIO_SOSC_OUT_1     = 1,
