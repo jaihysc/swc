@@ -22,12 +22,35 @@ int main() {
     // Initialize hardware
     // Some initializations settings are part of FSMs in main loop
 
+    gpio_pull_up(14); // To check for test modes
+    gpio_pull_up(15);
     gpio_init(GPIO_CHARGING);
     gpio_set_dir(GPIO_CHARGING, GPIO_IN);
 
     adc_init();
-
     btInit();
+
+    // Enter test mode if pull down present
+    ControlState controlState;
+    if (!gpio_get(14)) {
+        while (!gpio_get(14)); // Wait until pulldown removed
+
+        dacEnable(0, true); // Turn on DAC and motor 0
+        controlState = CONTROL_TEST_MOTOR_0;
+    }
+    else if (!gpio_get(15)) {
+        while (!gpio_get(15)); // Wait until pulldown removed
+
+        dacEnable(1, true);
+        controlState = CONTROL_TEST_MOTOR_1;
+    }
+    else {
+        controlState = CONTROL_CAL_ENTER;
+    }
+
+    gpio_disable_pulls(14);
+    gpio_disable_pulls(15);
+
     soscInit();
 
     dacSet(0, 498); // 0.4 V
@@ -40,7 +63,6 @@ int main() {
     // Cal   -> Idle
     //  ^        v
     // Reset <- Charging
-    ControlState controlState = CONTROL_CAL_ENTER;
     while (1) {
         statusUpdate();
         dacUpdate();
@@ -204,6 +226,23 @@ int main() {
                 if (motorReady(0)) {
                     dacEnable(0, false);
                     controlState = CONTROL_CAL_ENTER;
+                }
+                break;
+            }
+
+            // Test modes
+            case CONTROL_TEST_MOTOR_0:
+            {
+                if (dacReady(0)) {
+                    motorMove(0, 100); // This will be repeatedly called to spin motor forever
+                }
+                break;
+            }
+
+            case CONTROL_TEST_MOTOR_1:
+            {
+                if (dacReady(1)) {
+                    motorMove(1, 100);
                 }
                 break;
             }
