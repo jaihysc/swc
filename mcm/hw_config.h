@@ -51,6 +51,8 @@ enum
     GPIO_MOT_MS1_1      = 11,
     GPIO_MOT_STEP_1     = 12,
     GPIO_MOT_DIR_1      = 13,
+    GPIO_TEST_MODE_0    = 23,
+    GPIO_TEST_MODE_1    = 24,
 
     PWM_SLICE_SOSC_0    = 1,
     PWM_SLICE_SOSC_1    = 0, // Slice 0 shared between sosc1 and dac0

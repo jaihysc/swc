@@ -11,6 +11,14 @@
 #include "sosc.h"
 #include "status.h"
 
+enum
+{
+    THETA_MOT = 1, // Motor/DAC for theta sweep, must be 1 since only DAC1 can run with SOSC1 when sweeping
+    RADIUS_MOT = 0,
+    THETA_SWEEP_STEPS  = 5000, // TBD Steps for full rotation
+    RADIUS_SWEEP_STEPS = 1000  // TBD steps for full radius
+};
+
 int main() {
 #ifdef PICO2_W
     // Initialize CYW43 driver architecture (will enable BT if/because CYW43_ENABLE_BLUETOOTH == 1)
@@ -22,24 +30,24 @@ int main() {
     // Initialize hardware
     // Some initializations settings are part of FSMs in main loop
 
-    gpio_pull_up(14); // To check for test modes
-    gpio_pull_up(15);
+    gpio_pull_up(GPIO_TEST_MODE_0); // To check for test modes
+    gpio_pull_up(GPIO_TEST_MODE_1);
     gpio_init(GPIO_CHARGING);
     gpio_set_dir(GPIO_CHARGING, GPIO_IN);
 
     adc_init();
     btInit();
 
-    // Enter test mode if pull down present
+    // Enter test mode 0/1 if pull down present
     ControlState controlState;
-    if (!gpio_get(14)) {
-        while (!gpio_get(14)); // Wait until pulldown removed
+    if (!gpio_get(GPIO_TEST_MODE_0)) {
+        while (!gpio_get(GPIO_TEST_MODE_0)); // Wait until pulldown removed
 
         dacEnable(0, true); // Turn on DAC and motor 0
         controlState = CONTROL_TEST_MOTOR_0;
     }
-    else if (!gpio_get(15)) {
-        while (!gpio_get(15)); // Wait until pulldown removed
+    else if (!gpio_get(GPIO_TEST_MODE_1)) {
+        while (!gpio_get(GPIO_TEST_MODE_1));
 
         dacEnable(1, true);
         controlState = CONTROL_TEST_MOTOR_1;
@@ -48,13 +56,13 @@ int main() {
         controlState = CONTROL_CAL_ENTER;
     }
 
-    gpio_disable_pulls(14);
-    gpio_disable_pulls(15);
+    gpio_disable_pulls(GPIO_TEST_MODE_0);
+    gpio_disable_pulls(GPIO_TEST_MODE_1);
 
     soscInit();
 
-    dacSet(0, 498); // 0.4 V
-    dacSet(1, 498);
+    dacSet(RADIUS_MOT, 498); // 0.4 V
+    dacSet(THETA_MOT, 498);
 
     // Main loop
     // In this loop the Bluetooth events will run
@@ -103,8 +111,8 @@ int main() {
                 bool detected;
                 if (soscDetect(&detected, 0)) {
                     if (detected) {
-                        // Turn on DAC and motor 0
-                        dacEnable(0, true);
+                        // Turn on DAC and motor
+                        dacEnable(THETA_MOT, true);
                         controlState = CONTROL_SWEEP_THETA_ENTER;
                     }
                 }
@@ -114,9 +122,8 @@ int main() {
             // Search for phone
             case CONTROL_SWEEP_THETA_ENTER:
             {
-                if (dacReady(0)) {
-                    // Sweep one rotation
-                    motorMove(0, 5000); // <<-- How many step for one rotation ?
+                if (dacReady(THETA_MOT)) {
+                    motorMove(THETA_MOT, THETA_SWEEP_STEPS); // Sweep one rotation
 
                     statusSet(STATUS_SWEEP_THETA);
                     controlState = CONTROL_SWEEP_THETA;
@@ -127,21 +134,21 @@ int main() {
             case CONTROL_SWEEP_THETA:
             {
                 bool detected;
-                if (soscDetect(&detected, 1)) {
+                if (soscDetect(&detected, 1)) { // Only DAC1 and SOSC1 can be used at the same time
                     if (detected) {
-                        motorMove(0, 0); // Stop motor 0
-                        dacEnable(0, false);
+                        motorMove(THETA_MOT, 0); // Stop motor
+                        dacEnable(THETA_MOT, false);
 
-                        // Turn on DAC and motor 1
-                        dacEnable(1, true);
+                        // Turn on DAC and motor
+                        dacEnable(RADIUS_MOT, true);
                         controlState = CONTROL_SWEEP_RADIUS_ENTER;
                     }
-                }
-                else if (motorReady(0)) {
-                    // Sweep in other direction
-                    if (motorMoveHome(0)) {
-                        // If already at start, sweep again one rotation
-                        motorMove(0, 5000); // <<-- How many step for one rotation ?
+                    else if (motorReady(THETA_MOT)) {
+                        // Sweep in other direction
+                        if (motorMoveHome(THETA_MOT)) {
+                            // If already at start, sweep again one rotation
+                            motorMove(THETA_MOT, THETA_SWEEP_STEPS);
+                        }
                     }
                 }
                 break;
@@ -149,9 +156,8 @@ int main() {
 
             case CONTROL_SWEEP_RADIUS_ENTER:
             {
-                if (!dacActive(0) && dacReady(1)) {
-                    // Sweep radius
-                    motorMove(1, 5000); // <<-- How many step to move to one end ?
+                if (!dacActive(THETA_MOT) && dacReady(RADIUS_MOT)) {
+                    motorMove(RADIUS_MOT, RADIUS_SWEEP_STEPS); // Sweep radius
 
                     statusSet(STATUS_SWEEP_RADIUS);
                     controlState = CONTROL_SWEEP_RADIUS;
@@ -161,17 +167,17 @@ int main() {
             case CONTROL_SWEEP_RADIUS:
             {
                 if (gpio_get(GPIO_CHARGING)) {
-                    motorMove(1, 0); // Stop motor 1
-                    dacEnable(1, false);
+                    motorMove(RADIUS_MOT, 0); // Stop motor
+                    dacEnable(RADIUS_MOT, false);
 
                     statusSet(STATUS_CHARGING);
                     controlState = CONTROL_CHARGING;
                 }
-                else if (motorReady(1)) {
+                else if (motorReady(RADIUS_MOT)) {
                     // Sweep in other direction
-                    if (motorMoveHome(1)) {
+                    if (motorMoveHome(RADIUS_MOT)) {
                         // If already at start, sweep again radius
-                        motorMove(1, 5000); // <<-- How many step to move to one end ?
+                        motorMove(RADIUS_MOT, RADIUS_SWEEP_STEPS);
                     }
                 }
                 break;
@@ -181,7 +187,8 @@ int main() {
             case CONTROL_CHARGING:
             {
                 if (!gpio_get(GPIO_CHARGING)) {
-                    dacEnable(1, true);
+                    // Rotate back to home
+                    dacEnable(RADIUS_MOT, true);
                     controlState = CONTROL_RESET_RADIUS_ENTER;
                 }
                 break;
@@ -190,8 +197,8 @@ int main() {
             // Reset
             case CONTROL_RESET_RADIUS_ENTER:
             {
-                if (dacReady(1)) {
-                    motorMoveHome(1);
+                if (dacReady(RADIUS_MOT)) {
+                    motorMoveHome(RADIUS_MOT);
 
                     statusSet(STATUS_RESET_RADIUS);
                     controlState = CONTROL_RESET_RADIUS;
@@ -201,10 +208,11 @@ int main() {
 
             case CONTROL_RESET_RADIUS:
             {
-                if (motorReady(1)) {
-                    dacEnable(1, false);
+                if (motorReady(RADIUS_MOT)) {
+                    dacEnable(RADIUS_MOT, false);
 
-                    dacEnable(0, true);
+                    // Now take theta to home position
+                    dacEnable(THETA_MOT, true);
                     controlState = CONTROL_RESET_THETA_ENTER;
                 }
                 break;
@@ -212,8 +220,8 @@ int main() {
 
             case CONTROL_RESET_THETA_ENTER:
             {
-                if (dacReady(0)) {
-                    motorMoveHome(0);
+                if (dacReady(THETA_MOT)) {
+                    motorMoveHome(THETA_MOT);
 
                     statusSet(STATUS_RESET_THETA);
                     controlState = CONTROL_RESET_THETA;
@@ -223,8 +231,8 @@ int main() {
 
             case CONTROL_RESET_THETA:
             {
-                if (motorReady(0)) {
-                    dacEnable(0, false);
+                if (motorReady(THETA_MOT)) {
+                    dacEnable(THETA_MOT, false);
                     controlState = CONTROL_CAL_ENTER;
                 }
                 break;

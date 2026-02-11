@@ -131,12 +131,16 @@ void dacUpdate(void) {
                 pwm_config cfg = pwm_get_default_config();
                 pwm_config_set_wrap(&cfg, DAC_PWM_WRAP);
                 if (fsm->dacIdx == 0) {
+                    gpio_disable_pulls(GPIO_DAC_SENSE_0);
+
                     gpio_set_function(GPIO_DAC_OUT_0, GPIO_FUNC_PWM);
                     adc_select_input(ADC_DAC_SENSE_0);
 
                     pwm_init(PWM_SLICE_DAC_OUT_0, &cfg, true);
                 }
                 else {
+                    gpio_disable_pulls(GPIO_DAC_SENSE_1);
+
                     gpio_set_function(GPIO_DAC_OUT_1, GPIO_FUNC_PWM);
                     adc_select_input(ADC_DAC_SENSE_1);
 
@@ -150,9 +154,11 @@ void dacUpdate(void) {
                 // Place GPIO pin on high impedance
                 if (fsm->dacIdx == 0) {
                     gpio_deinit(GPIO_DAC_OUT_0);
+                    gpio_pull_down(GPIO_DAC_SENSE_0); // Pull output down
                 }
                 else {
                     gpio_deinit(GPIO_DAC_OUT_1);
+                    gpio_pull_down(GPIO_DAC_SENSE_1);
                 }
 
                 dac->active = false;

@@ -13,6 +13,8 @@ typedef enum
     STATUS_CHARGING,
     STATUS_RESET_RADIUS,
     STATUS_RESET_THETA,
+    STATUS_TEST_0,
+    STATUS_TEST_1,
 } StatusCode;
 
 void statusSet(StatusCode status);

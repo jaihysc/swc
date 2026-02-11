@@ -9,25 +9,23 @@
 
 enum
 {
-    SOSC_COUNT          = 2,       // Hardware number of oscillators
+    SOSC_COUNT          = 2,        // Hardware number of oscillators
 
-    SOSC_POWERUP_TIME_0 = 8000000, // Time to wait after powering on oscillator before taking measurement [us]
-    SOSC_POWERUP_TIME_1 = 1000000, //   needs some time to settle
-    SOSC_MEAS_ITER      = 8,       // Number of measurements (iterations) before making decision
-    SOSC_MEAS_TIME      = 250000,  // Measurement duration [us]
-    SOSC_CLKDIV_0       = 1,       // Input clock divider, set to avoid overflow 16 bit counter during measurement duration
+    SOSC_POWERUP_TIME_0 = 16000000, // Time to wait after powering on oscillator before taking measurement [us]
+    SOSC_POWERUP_TIME_1 = 2000000,  //   oscillation frequency takes time to settle
+    SOSC_MEAS_TIME      = 250000,   // Frequency measurement duration [us]
+    SOSC_CLKDIV_0       = 1,        // Input clock divider, set to avoid overflow 16 bit counter during measurement duration
     SOSC_CLKDIV_1       = 2,
 
-    SOSC_CAL_ITER       = 8,
-    SOSC_CAL_MIN_COUNT  = 5000,    // Minimum frequency to pass calibration: freq / clkdiv * meas_time
-                                   // 20 KHz for sosc0, 40 KHz for sosc1
+    SOSC_CAL_ITER       = 64,
+    SOSC_CAL_MIN_COUNT  = 5000,     // Minimum frequency to pass calibration: freq / clkdiv * meas_time
+                                    // counts = freq / clkdiv * meas_time
+                                    // 20 KHz for sosc0, 40 KHz for sosc1
 
-    SOSC_DET_TH         = 7,       // Number of measurements in threshold (votes), of total iterations, to declare detected
-    SOSC_COUNT_MIN_TH_0 = 5,       // For a measurement, vote threshold: freq difference 5 counts  =  20 Hz / clkdiv * meas_time
-    SOSC_COUNT_MAX_TH_0 = 50,      // For a measurement, vote threshold: freq difference 50 counts = 200 Hz / clkdiv * meas_time
-                                   //   significant frequency changes from charger ping ignored
-    SOSC_COUNT_MIN_TH_1 = 100,
-    SOSC_COUNT_MAX_TH_1 = 1000,
+    SOSC_VOTE_TH        = 3,        // Consecutive votes required to declare detected
+    SOSC_DET_ITER       = 8,        // Number of measurements (iterations) before making vote detect/not detected
+    SOSC_DET_COUNT_TH_0 = 3,        // Count difference from calibrated value for detect vote:
+    SOSC_DET_COUNT_TH_1 = 100,      // 12 Hz for sosc0, 800 Hz for sosc1
 };
 
 typedef struct // Data for one oscillator
@@ -54,18 +52,20 @@ typedef struct
 typedef struct
 {
     uint32_t countsAccum;
-    uint16_t countsPrev;
     uint8_t iter;
 } SoscCalFsm;
 
 typedef struct
 {
+    uint32_t countsAccum;
     uint8_t detectVote;
-    uint8_t iter;
+    uint8_t detIter;
 } SoscDetFsm;
 
 
+// Lookups
 static uint32_t soscPowerupTime[SOSC_COUNT] = {SOSC_POWERUP_TIME_0, SOSC_POWERUP_TIME_1};
+static uint32_t soscDetCountTh[SOSC_COUNT] = {SOSC_DET_COUNT_TH_0, SOSC_DET_COUNT_TH_1};
 static uint8_t soscPwmSlice[SOSC_COUNT] = {PWM_SLICE_SOSC_0, PWM_SLICE_SOSC_1};
 static uint8_t soscEnGpio[SOSC_COUNT] = {GPIO_SOSC_EN_0, GPIO_SOSC_EN_1};
 static uint8_t soscOutGpio[SOSC_COUNT] = {GPIO_SOSC_OUT_0, GPIO_SOSC_OUT_1};
@@ -190,48 +190,23 @@ bool soscCalibrate(uint8_t soscIdx) {
 
     uint16_t counts;
     if (measFreq(&counts, soscIdx)) {
-        bool resetCal = false;
         if (counts < SOSC_CAL_MIN_COUNT) {
-            resetCal = true;
-        }
-        else {
-            // Check variation between measurements
-            if (fsm->iter > 0) {
-                int32_t countDiff = (int32_t)counts - (int32_t)fsm->countsPrev;
-                if (countDiff < 0) {
-                    countDiff = -countDiff;
-                }
-
-                int16_t minTh;
-                if (soscIdx == 0) {
-                    minTh = SOSC_COUNT_MIN_TH_0;
-                }
-                else {
-                    minTh = SOSC_COUNT_MIN_TH_1;
-                }
-                if (countDiff >= minTh) {
-                    resetCal = true;
-                }
-            }
-
-            if (!resetCal) {
-                fsm->countsAccum += counts;
-                fsm->countsPrev = counts;
-
-                ++fsm->iter;
-                if (fsm->iter >= SOSC_CAL_ITER) {
-                    sosc[soscIdx].idleCounts = fsm->countsAccum / SOSC_CAL_ITER;
-
-                    done = true;
-                }
-            }
-        }
-
-        if (resetCal) {
             // Invalid frequency, do the powerup wait again
             sosc[soscIdx].ready = 0;
             fsm->countsAccum = 0;
             fsm->iter = 0;
+        }
+        else {
+            fsm->countsAccum += counts;
+
+            ++fsm->iter;
+            if (fsm->iter >= SOSC_CAL_ITER) {
+                sosc[soscIdx].idleCounts = fsm->countsAccum / SOSC_CAL_ITER;
+
+                fsm->countsAccum = 0;
+                fsm->iter = 0;
+                done = true;
+            }
         }
     }
     return done;
@@ -244,53 +219,33 @@ bool soscDetect(bool* detected, uint8_t soscIdx) {
     // Count number of edge transitions during fixed time interval
     uint16_t counts;
     if (measFreq(&counts, soscIdx)) {
-        int16_t minTh, maxTh;
-        if (soscIdx == 0) {
-            minTh = SOSC_COUNT_MIN_TH_0;
-            maxTh = SOSC_COUNT_MAX_TH_0;
-        }
-        else {
-            minTh = SOSC_COUNT_MIN_TH_1;
-            maxTh = SOSC_COUNT_MAX_TH_1;
-        }
+        fsm->countsAccum += counts;
 
-        int32_t countDiff = (int32_t)counts - (int32_t)sosc[soscIdx].idleCounts;
-        bool diffNegative = countDiff < 0;
+        ++fsm->detIter;
+        if (fsm->detIter >= SOSC_DET_ITER) {
+            int32_t countDiff = (int32_t)(fsm->countsAccum / SOSC_DET_ITER) - (int32_t)sosc[soscIdx].idleCounts;
 
-        int32_t absCountDiff = countDiff;
-        if (diffNegative) {
-            absCountDiff = -absCountDiff;
-        }
+            // Phone is placed if frequency increased
+            if (countDiff > (int32_t)(soscDetCountTh[soscIdx])) {
+                ++fsm->detectVote;
 
-        // Phone is placed if frequency increased
-        if (!diffNegative && absCountDiff > minTh && absCountDiff < maxTh) {
-            ++fsm->detectVote;
-        }
-
-        ++fsm->iter;
-        if (fsm->iter >= SOSC_MEAS_ITER) {
-            *detected = false;
-            if (fsm->detectVote >= SOSC_DET_TH) {
-                *detected = true;
+                // Detected if sufficient consecutive votes
+                if (fsm->detectVote >= SOSC_VOTE_TH) {
+                    fsm->detectVote = 0;
+                    *detected = true;
+                    done = true;
+                }
             }
-            else if (fsm->detectVote == 0) {
-                // Update counts when certain is idle
+            else {
+                fsm->detectVote = 0;
 
-                // if (soscIdx == 0) {
-                    // 1. Only update if frequency decreased (objects removed)
-                    // 2. Don't update if difference is small,
-                    // fixes issue where slowly moving phone towards table not detected as the countsPrev slowly inc/decrements
-                    // if (diffNegative && absCountDiff > minTh) {
-                    //     sosc[soscIdx].idleCounts = counts;
-                    // }
-                // }
+                *detected = false;
+                done = true;
             }
 
             // Reset
-            fsm->detectVote = 0;
-            fsm->iter = 0;
-
-            done = true;
+            fsm->countsAccum = 0;
+            fsm->detIter = 0;
         }
     }
     return done;

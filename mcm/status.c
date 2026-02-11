@@ -21,6 +21,8 @@ static const uint8_t statusMapping[] =
     0b00000111, // STATUS_CHARGING
     0b00000101, // STATUS_RESET_THETA
     0b00001101, // STATUS_RESET_RADIUS
+    0b11111111, // STATUS_TEST_0
+    0b00001111, // STATUS_TEST_1
 };
 
 
