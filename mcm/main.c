@@ -81,8 +81,8 @@ int main() {
             case CONTROL_CAL_ENTER:
             {
                 if (!dacActive(0) && !dacActive(1)) {
-                    statusSet(STATUS_CAL_0);
-                    controlState = CONTROL_CAL_0;
+                    statusSet(STATUS_CAL_1);
+                    controlState = CONTROL_CAL_1;
                 }
                 break;
             }
@@ -90,8 +90,8 @@ int main() {
             case CONTROL_CAL_0:
             {
                 if (soscCalibrate(0)) {
-                    statusSet(STATUS_CAL_1);
-                    controlState = CONTROL_CAL_1;
+                    statusSet(STATUS_IDLE);
+                    controlState = CONTROL_IDLE;
                 }
                 break;
             }
@@ -99,8 +99,8 @@ int main() {
             case CONTROL_CAL_1:
             {
                 if (soscCalibrate(1)) {
-                    statusSet(STATUS_IDLE);
-                    controlState = CONTROL_IDLE;
+                    statusSet(STATUS_CAL_1);
+                    controlState = CONTROL_CAL_0;
                 }
                 break;
             }

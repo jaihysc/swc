@@ -11,9 +11,10 @@ enum
 {
     SOSC_COUNT          = 2,        // Hardware number of oscillators
 
-    SOSC_POWERUP_TIME_0 = 16000000, // Time to wait after powering on oscillator before taking measurement [us]
+    SOSC_POWERUP_TIME_0 = 8000000,  // Time to wait after powering on oscillator before taking measurement [us]
     SOSC_POWERUP_TIME_1 = 2000000,  //   oscillation frequency takes time to settle
-    SOSC_MEAS_TIME      = 250000,   // Frequency measurement duration [us]
+    SOSC_MEAS_TIME_0    = 500000,   // Frequency measurement duration [us]
+    SOSC_MEAS_TIME_1    = 250000,
     SOSC_CLKDIV_0       = 1,        // Input clock divider, set to avoid overflow 16 bit counter during measurement duration
     SOSC_CLKDIV_1       = 2,
 
@@ -23,8 +24,8 @@ enum
                                     // 20 KHz for sosc0, 40 KHz for sosc1
 
     SOSC_VOTE_TH        = 3,        // Consecutive votes required to declare detected
-    SOSC_DET_ITER       = 8,        // Number of measurements (iterations) before making vote detect/not detected
-    SOSC_DET_COUNT_TH_0 = 3,        // Count difference from calibrated value for detect vote:
+    SOSC_DET_ITER       = 4,        // Number of measurements (iterations) before making vote detect/not detected
+    SOSC_DET_COUNT_TH_0 = 1,        // Count difference from calibrated value for detect vote:
     SOSC_DET_COUNT_TH_1 = 100,      // 12 Hz for sosc0, 800 Hz for sosc1
 };
 
@@ -64,6 +65,7 @@ typedef struct
 
 
 // Lookups
+static uint32_t soscMeasTime[SOSC_COUNT] = {SOSC_MEAS_TIME_0, SOSC_MEAS_TIME_1};
 static uint32_t soscPowerupTime[SOSC_COUNT] = {SOSC_POWERUP_TIME_0, SOSC_POWERUP_TIME_1};
 static uint32_t soscDetCountTh[SOSC_COUNT] = {SOSC_DET_COUNT_TH_0, SOSC_DET_COUNT_TH_1};
 static uint8_t soscPwmSlice[SOSC_COUNT] = {PWM_SLICE_SOSC_0, PWM_SLICE_SOSC_1};
@@ -148,13 +150,13 @@ static bool measFreq(uint16_t* counts, uint8_t soscIdx) {
 
             // int32_t big enough to hold elapsed time
             int32_t elapsedTime = (int32_t)(time_us_64() - fsm->startTime);
-            if (elapsedTime >= SOSC_MEAS_TIME) {
+            if (elapsedTime >= soscMeasTime[soscIdx]) {
                 pwm_set_enabled(slice, false);
                 uint16_t rawCounts = pwm_get_counter(slice);
 
                 // The elapsed time may be few ms longer than SOSC_MEAS_TIME
                 // Correct counts based on elapsed time, calculate count per us, then scale by extra time
-                uint16_t countCorrection = (uint32_t)rawCounts * (elapsedTime - SOSC_MEAS_TIME) / elapsedTime;
+                uint16_t countCorrection = (uint32_t)rawCounts * (elapsedTime - soscMeasTime[soscIdx]) / elapsedTime;
                 *counts = rawCounts - countCorrection;
 
                 // Set GPIO to high impedance
