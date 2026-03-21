@@ -35,13 +35,13 @@ def main():
     iteration = 0
     while True:
         # Capture image from camera
-        subprocess.run([
-            'rpicam-still',
-            '--width', '1920',
-            '--height', '1080',
-            '--encoding', 'png',
-            '--output', CAMERA_IMAGE], stdout=subprocess.DEVNULL)
-        print(f'[{iteration}] Captured image')
+        # subprocess.run([
+        #     'rpicam-still',
+        #     '--width', '1920',
+        #     '--height', '1080',
+        #     '--encoding', 'png',
+        #     '--output', CAMERA_IMAGE], stdout=subprocess.DEVNULL)
+        # print(f'[{iteration}] Captured image')
 
         # Run inference
         im_pil = Image.open(CAMERA_IMAGE).convert('RGB')

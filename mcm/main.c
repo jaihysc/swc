@@ -30,34 +30,11 @@ int main() {
     // Initialize hardware
     // Some initializations settings are part of FSMs in main loop
 
-    gpio_pull_up(GPIO_TEST_MODE_0); // To check for test modes
-    gpio_pull_up(GPIO_TEST_MODE_1);
     gpio_init(GPIO_CHARGING);
     gpio_set_dir(GPIO_CHARGING, GPIO_IN);
 
     adc_init();
     btInit();
-
-    // Enter test mode 0/1 if pull down present
-    ControlState controlState;
-    if (!gpio_get(GPIO_TEST_MODE_0)) {
-        while (!gpio_get(GPIO_TEST_MODE_0)); // Wait until pulldown removed
-
-        dacEnable(0, true); // Turn on DAC and motor 0
-        controlState = CONTROL_TEST_MOTOR_0;
-    }
-    else if (!gpio_get(GPIO_TEST_MODE_1)) {
-        while (!gpio_get(GPIO_TEST_MODE_1));
-
-        dacEnable(1, true);
-        controlState = CONTROL_TEST_MOTOR_1;
-    }
-    else {
-        controlState = CONTROL_CAL_ENTER;
-    }
-
-    gpio_disable_pulls(GPIO_TEST_MODE_0);
-    gpio_disable_pulls(GPIO_TEST_MODE_1);
 
     soscInit();
 
@@ -71,6 +48,7 @@ int main() {
     // Cal   -> Idle
     //  ^        v
     // Reset <- Charging
+    ControlState controlState = CONTROL_CAL_ENTER;
     while (1) {
         statusUpdate();
         dacUpdate();
@@ -81,26 +59,42 @@ int main() {
             case CONTROL_CAL_ENTER:
             {
                 if (!dacActive(0) && !dacActive(1)) {
-                    statusSet(STATUS_CAL_1);
-                    controlState = CONTROL_CAL_1;
+                    controlState = CONTROL_CAL_MOT_0;
                 }
                 break;
             }
 
-            case CONTROL_CAL_0:
+            case CONTROL_CAL_MOT_0:
+            {
+                if (motorCalibrate(0)) {
+                    controlState = CONTROL_CAL_MOT_1;
+                }
+                break;
+            }
+
+            case CONTROL_CAL_MOT_1:
+            {
+                if (motorCalibrate(1)) {
+                    statusSet(STATUS_CAL_1);
+                    controlState = CONTROL_CAL_SOSC_1;
+                }
+                break;
+            }
+
+            case CONTROL_CAL_SOSC_1: // First calibrate SOSC1, then SOSC0, so SOSC0 can remain on for idle
+            {
+                if (soscCalibrate(1)) {
+                    statusSet(STATUS_CAL_1);
+                    controlState = CONTROL_CAL_SOSC_0;
+                }
+                break;
+            }
+
+            case CONTROL_CAL_SOSC_0:
             {
                 if (soscCalibrate(0)) {
                     statusSet(STATUS_IDLE);
                     controlState = CONTROL_IDLE;
-                }
-                break;
-            }
-
-            case CONTROL_CAL_1:
-            {
-                if (soscCalibrate(1)) {
-                    statusSet(STATUS_CAL_1);
-                    controlState = CONTROL_CAL_0;
                 }
                 break;
             }
@@ -111,8 +105,9 @@ int main() {
                 bool detected;
                 if (soscDetect(&detected, 0)) {
                     if (detected) {
-                        // Turn on DAC and motor
-                        dacEnable(THETA_MOT, true);
+                        motorMove(THETA_MOT, THETA_SWEEP_STEPS); // Sweep one rotation
+
+                        statusSet(STATUS_SWEEP_THETA);
                         controlState = CONTROL_SWEEP_THETA_ENTER;
                     }
                 }
@@ -122,11 +117,8 @@ int main() {
             // Search for phone
             case CONTROL_SWEEP_THETA_ENTER:
             {
-                if (dacReady(THETA_MOT)) {
-                    motorMove(THETA_MOT, THETA_SWEEP_STEPS); // Sweep one rotation
-
-                    statusSet(STATUS_SWEEP_THETA);
-                    controlState = CONTROL_SWEEP_THETA;
+                if (motorReady(0)) { // FIXME Test only state
+                    motorMoveHome(0);
                 }
                 break;
             }
@@ -137,11 +129,15 @@ int main() {
                 if (soscDetect(&detected, 1)) { // Only DAC1 and SOSC1 can be used at the same time
                     if (detected) {
                         motorMove(THETA_MOT, 0); // Stop motor
-                        dacEnable(THETA_MOT, false);
+                        // dacEnable(THETA_MOT, false);
 
-                        // Turn on DAC and motor
-                        dacEnable(RADIUS_MOT, true);
-                        controlState = CONTROL_SWEEP_RADIUS_ENTER;
+                        // // Turn on DAC and motor
+                        // dacEnable(RADIUS_MOT, true);
+                        // controlState = CONTROL_SWEEP_RADIUS_ENTER;
+                        motorMove(RADIUS_MOT, RADIUS_SWEEP_STEPS); // Sweep radius
+
+                        statusSet(STATUS_SWEEP_RADIUS);
+                        controlState = CONTROL_SWEEP_RADIUS;
                     }
                     else if (motorReady(THETA_MOT)) {
                         // Sweep in other direction
@@ -154,15 +150,15 @@ int main() {
                 break;
             }
 
-            case CONTROL_SWEEP_RADIUS_ENTER:
-            {
-                if (!dacActive(THETA_MOT) && dacReady(RADIUS_MOT)) {
-                    motorMove(RADIUS_MOT, RADIUS_SWEEP_STEPS); // Sweep radius
+            // case CONTROL_SWEEP_RADIUS_ENTER:
+            // {
+            //     if (!dacActive(THETA_MOT) && dacReady(RADIUS_MOT)) {
+            //         motorMove(RADIUS_MOT, RADIUS_SWEEP_STEPS); // Sweep radius
 
-                    statusSet(STATUS_SWEEP_RADIUS);
-                    controlState = CONTROL_SWEEP_RADIUS;
-                }
-            }
+            //         statusSet(STATUS_SWEEP_RADIUS);
+            //         controlState = CONTROL_SWEEP_RADIUS;
+            //     }
+            // }
 
             case CONTROL_SWEEP_RADIUS:
             {

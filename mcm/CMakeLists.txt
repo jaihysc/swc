@@ -57,6 +57,9 @@ target_compile_definitions(mcm PRIVATE
     RUNNING_AS_CLIENT=0
     "${PICO_BOARD_CAPITALIZED}"
 )
+target_compile_options(mcm PRIVATE
+    -Wall -Wextra -Werror
+)
 
 # Setup Bluetooth
 if(${BT_ENABLED})

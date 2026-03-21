@@ -10,8 +10,10 @@ typedef enum
 
     // Startup calibration
     CONTROL_CAL_ENTER = 0,
-    CONTROL_CAL_0,
-    CONTROL_CAL_1,
+    CONTROL_CAL_SOSC_0,
+    CONTROL_CAL_SOSC_1,
+    CONTROL_CAL_MOT_0,
+    CONTROL_CAL_MOT_1,
 
     // Runtime
     CONTROL_IDLE,

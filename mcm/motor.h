@@ -10,6 +10,8 @@ void motorMove(uint8_t motIdx, int32_t steps);
 // Request motor move home, return true if already at home
 bool motorMoveHome(uint8_t motIdx);
 
+bool motorCalibrate(uint8_t motIdx);
+
 void motorUpdate(void);
 
 #endif // MOTOR_H

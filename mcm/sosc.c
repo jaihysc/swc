@@ -149,7 +149,7 @@ static bool measFreq(uint16_t* counts, uint8_t soscIdx) {
             const uint8_t slice = soscPwmSlice[soscIdx];
 
             // int32_t big enough to hold elapsed time
-            int32_t elapsedTime = (int32_t)(time_us_64() - fsm->startTime);
+            uint32_t elapsedTime = (uint32_t)(time_us_64() - fsm->startTime);
             if (elapsedTime >= soscMeasTime[soscIdx]) {
                 pwm_set_enabled(slice, false);
                 uint16_t rawCounts = pwm_get_counter(slice);
