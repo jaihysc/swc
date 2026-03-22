@@ -8,6 +8,6 @@ void soscInit(void);
 bool soscCalibrate(uint8_t soscIdx);
 
 // Measures sense oscillator frequency to detect objects
-bool soscDetect(bool* detected, uint8_t soscIdx);
+bool soscDetect(bool* detected, uint8_t soscIdx, int32_t thresh);
 
 #endif // SOSC_H

@@ -7,7 +7,7 @@
 enum
 {
     MOT_COUNT = 2,
-    MOT_STARTUP_SCALE      = 4,       // Wait count scaled by this when moving from rest
+    MOT_STARTUP_SCALE      = 3,       // Wait count scaled by this when moving from rest
     MOT_STARTUP_WAIT_COUNT = 1 << 16, // Amount of FSM updates for charge pump to stabilize
     MOT_STEP_HOLD_COUNT    = 16,      // Amount of FSM updates to hold step output high
     MOT_STEP_WAIT_COUNT    = 1024,    // Amount of FSM updates to before next step input
@@ -110,6 +110,9 @@ void motorUpdate(void) {
     switch (fsm->state) {
         case MOT_FSM_INIT:
         {
+            dacSet(0, 498); // 0.4 V
+            dacSet(1, 498);
+
             // Setup pulls on home switches
             gpio_pull_up(GPIO_MOT_HOME_0);
             gpio_pull_up(GPIO_MOT_HOME_1);
