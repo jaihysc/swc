@@ -20,8 +20,8 @@ enum
     THETA_SWEEP_STEP_MAX = 40,
     THETA_SWEEP_STEP  = 150,
 
-    RADIUS_SWEEP_STEP_MAX = 30,
-    RADIUS_SWEEP_STEP = 40,
+    RADIUS_SWEEP_STEP_MAX = 60,
+    RADIUS_SWEEP_STEP = 20,
 
     // THETA_SWEEP_STEP_MAX  = 150,
     // RADIUS_SWEEP_STEP_MAX = 40
@@ -59,6 +59,8 @@ int main() {
     int16_t threshAdjust = 0;
     int8_t sweepSteps = 0;
     int8_t sweepDir = 1;
+    uint32_t chargeDetTimeout = 0;
+    int32_t chargeVote = 0;
     while (1) {
         statusUpdate();
         dacUpdate();
@@ -133,6 +135,10 @@ int main() {
                 if (motorReady(THETA_MOT)) {
                     if (soscDetect(&detected, 1, threshAdjust)) { // Only DAC1 and SOSC1 can be used at the same time
                         if (detected) {
+                            sweepSteps = 0;
+                            sweepDir = 1;
+                            threshAdjust = 0;
+
                             statusSet(STATUS_SWEEP_RADIUS);
                             controlState = CONTROL_SWEEP_RADIUS;
                         }
@@ -163,32 +169,51 @@ int main() {
 
             case CONTROL_SWEEP_RADIUS:
             {
-                // TODO
-                // if (gpio_get(GPIO_CHARGING)) {
-                //     motorMove(RADIUS_MOT, 0); // Stop motor
-                //     dacEnable(RADIUS_MOT, false);
+                if (motorReady(RADIUS_MOT)) {
+                    if (gpio_get(GPIO_CHARGING)) {
+                        ++chargeVote;
+                        if (chargeVote > (1 << 20)) { // Charging light needs to remain on, not flashing
+                            chargeDetTimeout = 0;
+                            chargeVote = 0;
 
-                //     statusSet(STATUS_CHARGING);
-                //     controlState = CONTROL_CHARGING;
-                // }
-                // else if (motorReady(RADIUS_MOT)) {
-                //     // Sweep in other direction
-                //     if (motorMoveHome(RADIUS_MOT)) {
-                //         // If already at start, sweep again radius
-                //         motorMove(RADIUS_MOT, RADIUS_SWEEP_STEPS);
-                //     }
-                // }
+                            statusSet(STATUS_CHARGING);
+                            controlState = CONTROL_CHARGING;
+                        }
+                    }
+                    else {
+                        chargeVote = 0;
+                        ++chargeDetTimeout;
+                        if (chargeDetTimeout > (1 << 18)) {
+                            chargeDetTimeout = 0;
+
+                            if (sweepDir > 0) {
+                                motorMove(RADIUS_MOT, RADIUS_SWEEP_STEP);
+                                ++sweepSteps;
+                                if (sweepSteps >= RADIUS_SWEEP_STEP_MAX) {
+                                    sweepDir = -1;
+                                }
+                            }
+                            else {
+                                motorMove(RADIUS_MOT, -RADIUS_SWEEP_STEP);
+                                --sweepSteps;
+                                if (sweepSteps == 0) {
+                                    sweepDir = 1;
+                                }
+                            }
+                        }
+                    }
+                }
                 break;
             }
 
             // Charging
             case CONTROL_CHARGING:
             {
-                if (!gpio_get(GPIO_CHARGING)) {
-                    // Rotate back to home
-                    dacEnable(RADIUS_MOT, true);
-                    controlState = CONTROL_CAL_ENTER;
-                }
+                // if (!gpio_get(GPIO_CHARGING)) {
+                //     // Rotate back to home
+                //     dacEnable(RADIUS_MOT, true);
+                //     controlState = CONTROL_CAL_ENTER;
+                // }
                 break;
             }
 
