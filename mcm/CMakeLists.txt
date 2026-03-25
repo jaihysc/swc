@@ -38,6 +38,7 @@ project(mcm C CXX ASM)
 pico_sdk_init()
 add_executable(mcm
     bt.c
+    control.c
     dac.c
     main.c
     motor.c

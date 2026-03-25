@@ -51,7 +51,7 @@ static MotorFsm motorFsm;
 static uint8_t motDirGpio[MOT_COUNT] = {GPIO_MOT_DIR_0, GPIO_MOT_DIR_1};
 static uint8_t motStepGpio[MOT_COUNT] = {GPIO_MOT_STEP_0, GPIO_MOT_STEP_1};
 
-static void disableMotors(void) {
+void motorDisable(void) {
     gpio_put(GPIO_MOT_SLP_0, false); // Active low
     gpio_put(GPIO_MOT_SLP_1, false);
     dacEnable(0, false);
@@ -95,7 +95,7 @@ bool motorCalibrate(uint8_t motIdx) {
                 return true;
             }
             else {
-                disableMotors();
+                motorDisable();
             }
         }
         else {
@@ -185,7 +185,7 @@ void motorUpdate(void) {
                                     motor->dir = targetDir;
 
                                     // First turn off everything, then turn on motor
-                                    disableMotors();
+                                    motorDisable();
                                     motor->state = MOT_STARTUP_1;
                                 }
                             }
