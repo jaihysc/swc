@@ -11,12 +11,17 @@ enum
 {
     THETA_MOT                 = 1, // Motor/DAC for theta sweep, must be 1 since only DAC1 can run with SOSC1 when sweeping
     RADIUS_MOT                = 0,
-    // THETA_SWEEP_STEPS      = 6000, // Steps for full rotation
-    // RADIUS_SWEEP_STEPS     = 1200  // steps for full radius
-    THETA_SWEEP_STEP_MAX      = 250,
+
+    THETA_SWEEP_STEP_MAX      = 260, // Number of stepper motor steps, for each "theta step"
     THETA_SWEEP_STEP          = 24,
     RADIUS_SWEEP_STEP_MAX     = 60,
     RADIUS_SWEEP_STEP         = 20,
+
+    THETA_COARSE_STEP         = 20, // Coarse steps are 10x the minimum step size
+    THETA_COARSE_STEP_MAX     = THETA_SWEEP_STEP_MAX / THETA_COARSE_STEP,
+    THETA_ADJUST_STEP         = 5, // When radius sweep couldn't find phone
+
+    THETA_ADJUST_MAX          = 16,
 
     CHARGE_DET_VOTE           = 1 << 17, // FSM iterations to declare charging
     CHARGE_DET_TIMEOUT        = 1 << 18, // FSM iterations to check for charging
@@ -32,37 +37,33 @@ typedef enum
 
     // Startup calibration
     CONTROL_CAL_ENTER = 0,
-    CONTROL_CAL_SOSC_0,
-    CONTROL_CAL_SOSC_1,
     CONTROL_CAL_MOT_0,
     CONTROL_CAL_MOT_1,
 
     // Runtime
     CONTROL_IDLE,
-    CONTROL_SWEEP_THETA,
+    CONTROL_SWEEP_THETA_COARSE,
+    CONTROL_SWEEP_THETA_FINE,
     CONTROL_SWEEP_RADIUS,
     CONTROL_CHARGING,
-
-    // CONTROL_RESET_MOT_0,
-    // CONTROL_RESET_MOT_1,
 } ControlState;
 
 typedef struct
 {
-    // Sweep steps / current direction
-    int32_t countDiffPrev;
-    int32_t countDiffAccum;
+    int32_t thetaCounts[THETA_COARSE_STEP_MAX];
+
     uint32_t chargeDetTimeout;
     uint32_t chargeVote;
     ControlState state;
 
     int16_t thetaSteps;
     int16_t radiusSteps;
-    uint8_t measIter;
-    uint8_t nearPhone : 1; // Theta/radius sweep near phone
-    uint8_t enterFine : 1; // Radius sweep switches from coarse to fine mode
-    uint8_t sweepDir  : 1;
-    uint8_t reserved  : 5;
+    uint8_t thetaAdj;      // Theta adjustment count during radius sweep
+    int8_t thetaAdjClamp;  // Hit one of the edges in theta adjust, sign is direction to keep stepping in
+    uint8_t nearPhone     : 1;
+    uint8_t enterFine     : 1; // Radius sweep switches from coarse to fine mode
+    uint8_t sweepDir      : 1;
+    uint8_t reserved      : 5;
 } Control;
 
 Control control;
@@ -117,6 +118,16 @@ void runControl() {
         case CONTROL_CAL_ENTER:
         {
             if (!dacActive(0) && !dacActive(1)) {
+                // Reset
+                fsm->chargeDetTimeout = 0;
+                fsm->chargeVote = 0;
+                fsm->thetaAdj = 0;
+                fsm->nearPhone = false;
+                fsm->enterFine = false;
+                fsm->sweepDir = 0;
+                fsm->thetaAdjClamp = 0;
+
+                statusSet(STATUS_CAL_0);
                 fsm->state = CONTROL_CAL_MOT_0;
             }
             break;
@@ -126,6 +137,8 @@ void runControl() {
         {
             if (motorCalibrate(0)) {
                 fsm->radiusSteps = 0;
+
+                statusSet(STATUS_CAL_1);
                 fsm->state = CONTROL_CAL_MOT_1;
             }
             break;
@@ -136,24 +149,6 @@ void runControl() {
             if (motorCalibrate(1)) {
                 fsm->thetaSteps = 0;
 
-                statusSet(STATUS_CAL_1);
-                fsm->state = CONTROL_CAL_SOSC_1;
-            }
-            break;
-        }
-
-        case CONTROL_CAL_SOSC_1: // First calibrate SOSC1, then SOSC0, so SOSC0 can remain on for idle
-        {
-            if (soscCalibrate(1)) {
-                statusSet(STATUS_CAL_1);
-                fsm->state = CONTROL_CAL_SOSC_0;
-            }
-            break;
-        }
-
-        case CONTROL_CAL_SOSC_0:
-        {
-            if (soscCalibrate(0)) {
                 statusSet(STATUS_IDLE);
                 fsm->state = CONTROL_IDLE;
             }
@@ -167,60 +162,74 @@ void runControl() {
             if (soscDetect(&detected, 0)) {
                 if (detected) {
                     statusSet(STATUS_SWEEP_THETA);
-
-                    fsm->state = CONTROL_SWEEP_THETA;
+                    fsm->state = CONTROL_SWEEP_THETA_COARSE;
                 }
             }
             break;
         }
 
         // Search for phone
-        case CONTROL_SWEEP_THETA:
+        case CONTROL_SWEEP_THETA_COARSE:
         {
             if (motorReady(THETA_MOT)) {
-                int32_t countDiff;
-                if (soscDelta(&countDiff, 1)) { // Only DAC1 and SOSC1 can be used at the same time
-                    bool avgReady = false;
-                    fsm->countDiffAccum += countDiff;
-                    ++fsm->measIter;
-                    if (fsm->measIter >= 2) {
-                        countDiff = fsm->countDiffAccum / 2;
+                int32_t counts;
+                if (soscCounts(&counts, 1)) { // Only DAC1 and SOSC1 can be used at the same time
+                    // Measure out frequency counts at all coarse step positions
+                    fsm->thetaCounts[fsm->thetaSteps / THETA_COARSE_STEP] = counts;
+                    if (!stepTheta(THETA_COARSE_STEP)) {
+                        // Find the maximum in the counts, and do fine search around there
+                        // Also find the minimum
+                        int32_t maxIdx = 0;
+                        int32_t maxVal = 0;
+                        int32_t minVal = 0x7FFFFFFF;
+                        for (uint32_t i = 0; i < THETA_COARSE_STEP_MAX; ++i) {
+                            if (fsm->thetaCounts[i] > maxVal) {
+                                maxIdx = i;
+                                maxVal = fsm->thetaCounts[i];
+                            }
+                            else if (fsm->thetaCounts[i] < minVal) {
+                                minVal = fsm->thetaCounts[i];
+                            }
+                        }
 
-                        fsm->countDiffAccum = 0;
-                        fsm->measIter = 0;
-                        avgReady = true;
-                    }
-
-                    // Update based on measurement
-                    if (avgReady) {
-                        if (fsm->nearPhone && countDiff < fsm->countDiffPrev) {
-                            // Peak found!
-                            fsm->countDiffPrev = 0;
-                            fsm->nearPhone = false;
-
-                            // Take a few steps backwards since the charging coil and the sosc coil are offset
-                            stepTheta(-10);
-
-                            fsm->state = CONTROL_SWEEP_RADIUS;
+                        if ((maxVal - minVal) < 40) {
+                            // Don't continue sweep if there actually was no phone
+                            motorDisable();
+                            fsm->state = CONTROL_CAL_ENTER;
                         }
                         else {
-                            // When near the phone, step slower
-                            if (countDiff > 30) {
-                                fsm->nearPhone = true;
-                            }
+                            // Step back an additional step to do fine serach
+                            int32_t startIdx = maxIdx - 1;
+                            stepTheta(-THETA_COARSE_STEP * (THETA_COARSE_STEP_MAX - startIdx));
 
-                            uint32_t step = (fsm->nearPhone) ? 1 : 10;
-                            if (!stepTheta(step)) {
-                                // Reached end but didn't find phone, give up
-                                fsm->countDiffPrev = 0;
-                                fsm->nearPhone = false;
+                            // Use index 0 to store the counts to compare against in fine search
+                            fsm->thetaCounts[0] = 0;
 
-                                fsm->state = CONTROL_CAL_ENTER;
-                            }
+                            fsm->state = CONTROL_SWEEP_THETA_FINE;
                         }
-
-                        fsm->countDiffPrev = countDiff;
                     }
+                }
+            }
+            break;
+        }
+
+        case CONTROL_SWEEP_THETA_FINE:
+        {
+            if (motorReady(THETA_MOT)) {
+                int32_t counts;
+                if (soscCounts(&counts, 1)) { // Only DAC1 and SOSC1 can be used at the same time
+                    // Find the maximum peak
+                    if (fsm->thetaCounts[0] > 0 && counts < fsm->thetaCounts[0]) {
+                        // Take a few steps backwards since the charging coil and the sosc coil are offset
+                        stepTheta(-10);
+
+                        fsm->state = CONTROL_SWEEP_RADIUS;
+                    }
+                    else {
+                        stepTheta(1);
+                    }
+
+                    fsm->thetaCounts[0] = counts;
                 }
             }
             break;
@@ -236,16 +245,15 @@ void runControl() {
                     // When charging light first turns on, go back few steps and slowly step forwards
                     if (!fsm->nearPhone) {
                         stepRadius(-1 * stepSign * 4);
+
+                        fsm->chargeDetTimeout = 0;
                         fsm->nearPhone = true;
                         fsm->enterFine = true; // Wait for timeout first before counting charge votes
                     }
                     else if (fsm->nearPhone && !fsm->enterFine) {
                         ++fsm->chargeVote;
                         if (fsm->chargeVote > CHARGE_DET_VOTE) { // Charging light needs to remain on, not flashing
-                            fsm->sweepDir = 0;
-                            fsm->chargeDetTimeout = 0;
                             fsm->chargeVote = 0;
-                            fsm->nearPhone = false;
 
                             motorDisable(); // Turn off motors to save power
 
@@ -272,7 +280,40 @@ void runControl() {
 
                     if (!stepRadius(step * stepSign)) {
                         // Didn't find the phone, move theta and try again
-                        stepTheta(5);
+                        // Zig-zag pattern to follow
+                        // When can't zig-zag, keep going other way
+                        // | | | | | | | |
+                        //   <-
+                        //   --->
+                        //  <----
+                        //  ------>
+                        //         ->
+                        //            ->
+                        if (fsm->thetaAdj >= THETA_ADJUST_MAX) {
+                            // Give up
+                            motorDisable();
+                            fsm->state = CONTROL_CAL_ENTER;
+                        }
+                        else {
+                            int32_t step = THETA_ADJUST_STEP * (fsm->thetaAdj + 1) * stepSign;
+                            int32_t newThetaStep = fsm->thetaSteps + step;
+
+                            if (fsm->thetaAdjClamp != 0) {
+                                // Keep going the other way
+                                stepTheta(THETA_ADJUST_STEP * fsm->thetaAdjClamp);
+                            }
+                            else if (newThetaStep < 0 || newThetaStep > THETA_SWEEP_STEP_MAX) {
+                                // Can't keep stepping in this direction, go the other way
+                                stepTheta(THETA_ADJUST_STEP * -1 * stepSign);
+                                fsm->thetaAdjClamp = -1 * stepSign;
+                            }
+                            else {
+                                stepTheta(step);
+                            }
+
+                            ++fsm->thetaAdj;
+                        }
+
                         fsm->sweepDir = ~fsm->sweepDir;
                         fsm->nearPhone = false;
                     }
@@ -296,26 +337,6 @@ void runControl() {
             }
             break;
         }
-
-        // case CONTROL_RESET_MOT_0:
-        // {
-        //     if (motorCalibrate(0)) {
-        //         fsm->radiusSteps = 0;
-        //         fsm->state = CONTROL_RESET_MOT_1;
-        //     }
-        //     break;
-        // }
-
-        // case CONTROL_RESET_MOT_1:
-        // {
-        //     if (motorCalibrate(1)) {
-        //         fsm->thetaSteps = 0;
-
-        //         statusSet(STATUS_IDLE);
-        //         fsm->state = CONTROL_IDLE;
-        //     }
-        //     break;
-        // }
 
         default:
         {

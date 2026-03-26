@@ -11,8 +11,10 @@ enum
 {
     SOSC_COUNT          = 2,        // Hardware number of oscillators
 
-    SOSC_POWERUP_TIME_0 = 4000000,  // Time to wait after powering on oscillator before taking measurement [us]
-    SOSC_POWERUP_TIME_1 = 1000000,  //   oscillation frequency takes time to settle
+    SOSC_POWERUP_TIME_0 = 400000,   // Time to wait after powering on oscillator before taking measurement [us]
+    SOSC_POWERUP_TIME_1 = 100000,   // Oscillation frequency takes time to settle (decreasing in frequency)
+                                    // Does not need until completely settled, since we only look at differences in counts
+
     SOSC_MEAS_TIME_0    = 100000,   // Frequency measurement duration [us]
     SOSC_MEAS_TIME_1    = 50000,
     SOSC_CLKDIV_0       = 1,        // Input clock divider, set to avoid overflow 16 bit counter during measurement duration
@@ -26,11 +28,10 @@ enum
 
     SOSC_VAR_MAX        = 5,        // Maximum variation expected between measurements
 
-    SOSC_DRIFT_TH       = 4,        // Adjust idleCounts if sign of past measured frequency difference from idleCounts exceeds threshold
+    SOSC_COUNT_HIST     = 16,       // Number of past measurements to keep for maintaining average of last counts
     SOSC_VOTE_TH        = 2,        // Consecutive votes required to declare detected
     SOSC_DET_COUNT_TH_0 = 4,        // Count difference from calibrated value for detect vote:
     SOSC_DET_COUNT_TH_1 = 60,       // ?? Hz for sosc0, ?? Hz for sosc1
-    SOSC_DET_COUNT_MAX  = 200,      // Ignore large frequency differences from charger pings
 };
 
 typedef struct // Data for one oscillator
@@ -62,14 +63,15 @@ typedef struct
 
 typedef struct
 {
-    int32_t lastDiff0;
-    int32_t lastDiff1;
+    uint16_t lastCount0;
+    uint16_t lastCount1;
     uint8_t iter;
 } SoscDeltaFsm;
 
 typedef struct
 {
-    int8_t signCounter; // Track drift by counting sign of count differences from idleCounts
+    int32_t lastCount[SOSC_COUNT_HIST];
+    uint8_t lastCountSize;
     uint8_t detectVote;
 } SoscDetFsm;
 
@@ -250,23 +252,21 @@ bool soscCalibrate(uint8_t soscIdx) {
     return done;
 }
 
-bool soscDelta(int32_t* countDiff, uint8_t soscIdx) {
+bool soscCounts(int32_t* avgCounts, uint8_t soscIdx) {
     SoscDeltaFsm* fsm = &soscDeltaFsm;
 
     uint16_t counts;
     if (soscMeas(&counts, soscIdx)) {
-        int32_t diff = (int32_t)counts - (int32_t)sosc[soscIdx].idleCounts;
-
         ++fsm->iter;
         if (fsm->iter >= 3) {
             fsm->iter = 0;
 
-            int32_t variation0 = fsm->lastDiff0 - fsm->lastDiff1;
+            int32_t variation0 = (int32_t)fsm->lastCount0 - (int32_t)fsm->lastCount1;
             if (variation0 < 0) {
                 variation0 = -variation0;
             }
 
-            int32_t variation1 = fsm->lastDiff0 - diff;
+            int32_t variation1 = (int32_t)counts - (int32_t)fsm->lastCount0;
             if (variation1 < 0) {
                 variation1 = -variation1;
             }
@@ -276,18 +276,17 @@ bool soscDelta(int32_t* countDiff, uint8_t soscIdx) {
             //    (1)                                 (2)
             //    Charger ping -------+                       +-------
             //    Measurements <---> <---> <--->     <---> <---> <--->
-            // 2. Charger ping within measurement from large counts
-            //    Charger ping -----------------
+            // 2. Charger ping within measurement, measurement duration is sufficiently long to exceed charger ping duration
+            //    Charger ping +-----------+
             //    Measurements <---> <---> <--->
-            int32_t avgDiff = (diff + fsm->lastDiff0 + fsm->lastDiff1) / 3;
-            if (variation0 < SOSC_VAR_MAX && variation1 < SOSC_VAR_MAX && avgDiff < SOSC_DET_COUNT_MAX) {
-                *countDiff = avgDiff;
+            if (variation0 < SOSC_VAR_MAX && variation1 < SOSC_VAR_MAX) {
+                *avgCounts = ((int32_t)counts + (int32_t)fsm->lastCount0 + (int32_t)fsm->lastCount1) / 3;
                 return true;
             }
         }
         else {
-            fsm->lastDiff1 = fsm->lastDiff0;
-            fsm->lastDiff0 = diff;
+            fsm->lastCount1 = fsm->lastCount0;
+            fsm->lastCount0 = counts;
         }
     }
     return false;
@@ -298,41 +297,56 @@ bool soscDetect(bool* detected, uint8_t soscIdx) {
     bool done = false;
 
     // Count number of edge transitions during fixed time interval
-    int32_t countDiff;
-    if (soscDelta(&countDiff, soscIdx)) {
-        // Track sign
-        // Adjust idle counts if significant drift
-        if (countDiff > 0) {
-            ++fsm->signCounter;
-            if (fsm->signCounter > SOSC_DRIFT_TH) {
-                ++sosc[soscIdx].idleCounts;
-                fsm->signCounter = 0;
-            }
-        }
-        else if (countDiff < 0) {
-            --fsm->signCounter;
-            if (fsm->signCounter < -SOSC_DRIFT_TH) {
-                --sosc[soscIdx].idleCounts;
-                fsm->signCounter = 0;
-            }
-        }
-
-        // Phone is placed if frequency increased
-        if (countDiff > (int32_t)(soscDetCountTh[soscIdx])) {
-            ++fsm->detectVote;
-
-            // Detected if sufficient consecutive votes
-            if (fsm->detectVote >= SOSC_VOTE_TH) {
-                fsm->detectVote = 0;
-                *detected = true;
-                done = true;
-            }
+    int32_t counts;
+    if (soscCounts(&counts, soscIdx)) {
+        // At startup lastCounts is 0, ignore that
+        if (fsm->lastCountSize == 0) {
+            fsm->lastCount[0] = counts;
+            fsm->lastCountSize = 1;
         }
         else {
-            fsm->detectVote = 0;
+            int32_t avgLastCounts = 0;
+            for (uint32_t i = 0; i < fsm->lastCountSize; ++i) {
+                avgLastCounts += fsm->lastCount[i];
+            }
+            avgLastCounts /= fsm->lastCountSize;
 
-            *detected = false;
-            done = true;
+            // Phone is placed if frequency increased
+            int32_t countDiff = counts - avgLastCounts;
+            if (countDiff > (int32_t)(soscDetCountTh[soscIdx])) {
+                ++fsm->detectVote;
+
+                // Detected if sufficient consecutive votes
+                if (fsm->detectVote >= SOSC_VOTE_TH) {
+                    // Throw away the measurements as the coil will have changed the next time it returns to home
+                    // and the measured counts will be different
+                    fsm->lastCountSize = 0;
+
+                    fsm->detectVote = 0;
+                    *detected = true;
+                    done = true;
+                }
+            }
+            else {
+                // Shift history forwards
+                if (fsm->lastCountSize < SOSC_COUNT_HIST) {
+                    for (uint32_t i = fsm->lastCountSize; i > 0; --i) {
+                        fsm->lastCount[i] = fsm->lastCount[i - 1];
+                    }
+                    fsm->lastCount[0] = counts;
+                    ++fsm->lastCountSize;
+                }
+                else {
+                    for (uint32_t i = (SOSC_COUNT_HIST - 1); i > 0; --i) {
+                        fsm->lastCount[i] = fsm->lastCount[i - 1];
+                    }
+                    fsm->lastCount[0] = counts;
+                }
+
+                fsm->detectVote = 0;
+                *detected = false;
+                done = true;
+            }
         }
     }
     return done;
