@@ -10,7 +10,8 @@ enum
     MOT_STARTUP_SCALE      = 3,       // Wait count scaled by this when moving from rest
     MOT_STARTUP_WAIT_COUNT = 1 << 16, // Amount of FSM updates for charge pump to stabilize
     MOT_STEP_HOLD_COUNT    = 16,      // Amount of FSM updates to hold step output high
-    MOT_STEP_WAIT_COUNT    = 1024,    // Amount of FSM updates to before next step input
+    MOT_STEP_WAIT_COUNT_0  = 1024,    // Amount of FSM updates to before next step input
+    MOT_STEP_WAIT_COUNT_1  = 640,     // charger motor (0) runs slower to avoid destroying itself
 };
 
 typedef enum
@@ -256,7 +257,8 @@ void motorUpdate(void) {
                             uint32_t mask = 1 << motStepGpio[motIdx];
                             gpio_clr_mask(mask);
 
-                            motor->waitCount = (uint32_t)MOT_STEP_WAIT_COUNT * (1ul << motor->startup);
+                            uint32_t waitCount = (motIdx == 0) ? MOT_STEP_WAIT_COUNT_0 : MOT_STEP_WAIT_COUNT_1;
+                            motor->waitCount = waitCount * (1ul << motor->startup);
                             if (motor->startup > 0) {
                                 --motor->startup;
                             }

@@ -17,11 +17,19 @@ enum
     RADIUS_SWEEP_STEP_MAX     = 60,
     RADIUS_SWEEP_STEP         = 20,
 
-    THETA_COARSE_STEP         = 20, // Coarse steps are 10x the minimum step size
-    THETA_COARSE_STEP_MAX     = THETA_SWEEP_STEP_MAX / THETA_COARSE_STEP,
-    THETA_ADJUST_STEP         = 5, // When radius sweep couldn't find phone
+    // Fine search around the index where max was found
+    // Coarse steps |     |     |     |     |
+    // Fine steps    <--------->
 
-    THETA_ADJUST_MAX          = 16,
+    THETA_COARSE_STEP         = 20, // Coarse steps are 20x the minimum step size
+    THETA_COARSE_STEP_MAX     = THETA_SWEEP_STEP_MAX / THETA_COARSE_STEP,
+    THETA_COARSE_MIN_COUNT    = 30, // Minimum count difference between max and min counts during coarse sweep to continue to fine sweep
+
+    THETA_FINE_STEP           = 2,
+    THETA_FINE_STEP_MAX       = 4 * THETA_COARSE_STEP / THETA_FINE_STEP,
+
+    THETA_ADJUST_STEP         = 2, // When radius sweep couldn't find phone
+    THETA_ADJUST_MAX          = 32,
 
     CHARGE_DET_VOTE           = 1 << 17, // FSM iterations to declare charging
     CHARGE_DET_TIMEOUT        = 1 << 18, // FSM iterations to check for charging
@@ -50,7 +58,11 @@ typedef enum
 
 typedef struct
 {
-    int32_t thetaCounts[THETA_COARSE_STEP_MAX];
+    union
+    {
+        int32_t coarse[THETA_COARSE_STEP_MAX + 1]; // n steps, but n + 1 measurements (start and end of step)
+        int32_t fine[THETA_FINE_STEP_MAX + 1];
+    } thetaCounts;
 
     uint32_t chargeDetTimeout;
     uint32_t chargeVote;
@@ -58,8 +70,10 @@ typedef struct
 
     int16_t thetaSteps;
     int16_t radiusSteps;
-    uint8_t thetaAdj;      // Theta adjustment count during radius sweep
-    int8_t thetaAdjClamp;  // Hit one of the edges in theta adjust, sign is direction to keep stepping in
+
+    uint8_t stepCount;           // Counter
+    uint8_t thetaAdj;          // Theta adjustment count during radius sweep
+    int8_t thetaAdjClamp;      // Hit one of the edges in theta adjust, sign is direction to keep stepping in
     uint8_t nearPhone     : 1;
     uint8_t enterFine     : 1; // Radius sweep switches from coarse to fine mode
     uint8_t sweepDir      : 1;
@@ -121,11 +135,12 @@ void runControl() {
                 // Reset
                 fsm->chargeDetTimeout = 0;
                 fsm->chargeVote = 0;
+                fsm->stepCount = 0;
                 fsm->thetaAdj = 0;
+                fsm->thetaAdjClamp = 0;
                 fsm->nearPhone = false;
                 fsm->enterFine = false;
                 fsm->sweepDir = 0;
-                fsm->thetaAdjClamp = 0;
 
                 statusSet(STATUS_CAL_0);
                 fsm->state = CONTROL_CAL_MOT_0;
@@ -175,38 +190,48 @@ void runControl() {
                 int32_t counts;
                 if (soscCounts(&counts, 1)) { // Only DAC1 and SOSC1 can be used at the same time
                     // Measure out frequency counts at all coarse step positions
-                    fsm->thetaCounts[fsm->thetaSteps / THETA_COARSE_STEP] = counts;
-                    if (!stepTheta(THETA_COARSE_STEP)) {
+                    fsm->thetaCounts.coarse[fsm->stepCount] = counts;
+
+                    bool doneSweep = fsm->stepCount >= THETA_COARSE_STEP_MAX;
+                    bool canStep = false;
+                    if (!doneSweep) {
+                        canStep = stepTheta(THETA_COARSE_STEP);
+                    }
+
+                    // At the end, or took the required number of steep steps
+                    if (!canStep || doneSweep) {
                         // Find the maximum in the counts, and do fine search around there
                         // Also find the minimum
                         int32_t maxIdx = 0;
                         int32_t maxVal = 0;
                         int32_t minVal = 0x7FFFFFFF;
-                        for (uint32_t i = 0; i < THETA_COARSE_STEP_MAX; ++i) {
-                            if (fsm->thetaCounts[i] > maxVal) {
+                        for (int32_t i = 0; i < (fsm->stepCount + 1); ++i) {
+                            if (fsm->thetaCounts.coarse[i] > maxVal) {
                                 maxIdx = i;
-                                maxVal = fsm->thetaCounts[i];
+                                maxVal = fsm->thetaCounts.coarse[i];
                             }
-                            else if (fsm->thetaCounts[i] < minVal) {
-                                minVal = fsm->thetaCounts[i];
+                            else if (fsm->thetaCounts.coarse[i] < minVal) {
+                                minVal = fsm->thetaCounts.coarse[i];
                             }
                         }
 
-                        if ((maxVal - minVal) < 40) {
+                        if ((maxVal - minVal) < THETA_COARSE_MIN_COUNT) {
                             // Don't continue sweep if there actually was no phone
                             motorDisable();
                             fsm->state = CONTROL_CAL_ENTER;
                         }
                         else {
-                            // Step back an additional step to do fine serach
-                            int32_t startIdx = maxIdx - 1;
-                            stepTheta(-THETA_COARSE_STEP * (THETA_COARSE_STEP_MAX - startIdx));
-
-                            // Use index 0 to store the counts to compare against in fine search
-                            fsm->thetaCounts[0] = 0;
+                            // Step backwards an additional step to do fine serach
+                            int32_t startIdx = maxIdx - 2;
+                            stepTheta(-THETA_COARSE_STEP * (fsm->stepCount - startIdx));
 
                             fsm->state = CONTROL_SWEEP_THETA_FINE;
                         }
+
+                        fsm->stepCount = 0;
+                    }
+                    else {
+                        ++fsm->stepCount;
                     }
                 }
             }
@@ -217,19 +242,37 @@ void runControl() {
         {
             if (motorReady(THETA_MOT)) {
                 int32_t counts;
-                if (soscCounts(&counts, 1)) { // Only DAC1 and SOSC1 can be used at the same time
-                    // Find the maximum peak
-                    if (fsm->thetaCounts[0] > 0 && counts < fsm->thetaCounts[0]) {
-                        // Take a few steps backwards since the charging coil and the sosc coil are offset
-                        stepTheta(-10);
+                if (soscCounts(&counts, 1)) {
+                    // Measure out frequency counts at all fine step positions
+                    fsm->thetaCounts.fine[fsm->stepCount] = counts;
+
+                    bool doneSweep = fsm->stepCount >= THETA_FINE_STEP_MAX;
+                    bool canStep = false;
+                    if (!doneSweep) {
+                        canStep = stepTheta(THETA_FINE_STEP);
+                    }
+
+                    if (!canStep || doneSweep) {
+                        // Find the maximum in the counts, and do fine search around there
+                        // Also find the minimum
+                        int32_t maxIdx = 0;
+                        int32_t maxVal = 0;
+                        for (int32_t i = 0; i < (fsm->stepCount + 1); ++i) {
+                            if (fsm->thetaCounts.fine[i] > maxVal) {
+                                maxIdx = i;
+                                maxVal = fsm->thetaCounts.fine[i];
+                            }
+                        }
+
+                        // Take extra 5 steps backwards since the charging coil and the sosc coil are offset
+                        stepTheta(-THETA_FINE_STEP * (fsm->stepCount - maxIdx) - 5);
+                        fsm->stepCount = 0;
 
                         fsm->state = CONTROL_SWEEP_RADIUS;
                     }
                     else {
-                        stepTheta(1);
+                        ++fsm->stepCount;
                     }
-
-                    fsm->thetaCounts[0] = counts;
                 }
             }
             break;
