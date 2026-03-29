@@ -283,6 +283,8 @@ void runControl() {
                         fsm->nearPhone = false;
                         fsm->enterFine = false;
                         fsm->sweepDir = 0;
+
+                        statusSet(STATUS_SWEEP_RADIUS);
                         fsm->state = CONTROL_SWEEP_RADIUS;
                     }
                     else {

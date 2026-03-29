@@ -12,10 +12,9 @@ enum
     SOSC_COUNT          = 2,        // Hardware number of oscillators
 
     SOSC_POWERUP_TIME_0 = 400000,   // Time to wait after powering on oscillator before taking measurement [us]
-    SOSC_POWERUP_TIME_1 = 100000,   // Oscillation frequency takes time to settle (decreasing in frequency)
-                                    // Does not need until completely settled, since we only look at differences in counts
+    SOSC_POWERUP_TIME_1 = 2000000,  // Oscillation frequency takes time to settle (decreasing in frequency)
 
-    SOSC_MEAS_TIME_0    = 65000,    // Frequency measurement duration [us]
+    SOSC_MEAS_TIME_0    = 100000,   // Frequency measurement duration [us]
     SOSC_MEAS_TIME_1    = 50000,
     SOSC_CLKDIV_0       = 1,        // Input clock divider, set to avoid overflow 16 bit counter during measurement duration
     SOSC_CLKDIV_1       = 1,
@@ -26,11 +25,11 @@ enum
                                     // counts = freq / clkdiv * meas_time
                                     // ?? KHz for sosc0, ?? KHz for sosc1
 
-    SOSC_VAR_MAX        = 5,        // Maximum variation expected between measurements
+    SOSC_VAR_MAX        = 8,        // Maximum variation expected between measurements
 
     SOSC_COUNT_HIST     = 8,        // Number of past measurements to keep for maintaining average of last counts
     SOSC_VOTE_TH        = 4,        // Consecutive votes required to declare detected
-    SOSC_DET_WAIT_TIME  = 350000,   // Time between measurements [us]
+    SOSC_DET_WAIT_TIME  = 500000,   // Time between measurements [us]
     SOSC_DET_COUNT_TH_0 = 4,        // Count difference from calibrated value for detect vote:
     SOSC_DET_COUNT_TH_1 = 60,       // ?? Hz for sosc0, ?? Hz for sosc1
 };
@@ -294,7 +293,7 @@ bool soscCounts(int32_t* avgCounts, uint8_t soscIdx) {
             //    Charger ping +-----------+
             //    Measurements <---> <---> <--->
             if (variation0 < SOSC_VAR_MAX && variation1 < SOSC_VAR_MAX) {
-                *avgCounts = (int32_t)counts + (int32_t)fsm->lastCount0 + (int32_t)fsm->lastCount1;
+                *avgCounts = ((int32_t)counts + (int32_t)fsm->lastCount0 + (int32_t)fsm->lastCount1) / 3;
                 return true;
             }
         }
@@ -344,28 +343,35 @@ bool soscDetect(bool* detected, uint8_t soscIdx) {
                     }
                 }
                 else {
-                    // Shift history forwards
-                    if (fsm->lastCountSize < SOSC_COUNT_HIST) {
-                        for (uint32_t i = fsm->lastCountSize; i > 0; --i) {
-                            fsm->lastCount[i] = fsm->lastCount[i - 1];
-                        }
-                        fsm->lastCount[0] = counts;
-                        ++fsm->lastCountSize;
+                    if (fsm->detectVote > 0) {
+                        // Allow some margin if one of the votes does not exceed threshold
+                        // Do not clear the detect votes immediately
+                        fsm->detectVote /= 1;
                     }
                     else {
-                        for (uint32_t i = (SOSC_COUNT_HIST - 1); i > 0; --i) {
-                            fsm->lastCount[i] = fsm->lastCount[i - 1];
+                        // Shift history forwards
+                        if (fsm->lastCountSize < SOSC_COUNT_HIST) {
+                            for (uint32_t i = fsm->lastCountSize; i > 0; --i) {
+                                fsm->lastCount[i] = fsm->lastCount[i - 1];
+                            }
+                            fsm->lastCount[0] = counts;
+                            ++fsm->lastCountSize;
                         }
-                        fsm->lastCount[0] = counts;
+                        else {
+                            for (uint32_t i = (SOSC_COUNT_HIST - 1); i > 0; --i) {
+                                fsm->lastCount[i] = fsm->lastCount[i - 1];
+                            }
+                            fsm->lastCount[0] = counts;
+                        }
 
-                        // Since history is filled, wait before taking more measurements
-                        fsm->waitStartTime = time_us_64();
+                        fsm->detectVote = 0;
+                        *detected = false;
+                        done = true;
                     }
-
-                    fsm->detectVote = 0;
-                    *detected = false;
-                    done = true;
                 }
+
+                // Wait a bit before trying again
+                fsm->waitStartTime = time_us_64();
             }
         }
     }

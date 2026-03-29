@@ -1,4 +1,5 @@
 #include <hardware/gpio.h>
+#include <hardware/timer.h>
 
 #include "dac.h"
 #include "motor.h"
@@ -6,12 +7,12 @@
 
 enum
 {
-    MOT_COUNT = 2,
-    MOT_STARTUP_SCALE      = 3,       // Wait count scaled by this when moving from rest
-    MOT_STARTUP_WAIT_COUNT = 1 << 16, // Amount of FSM updates for charge pump to stabilize
-    MOT_STEP_HOLD_COUNT    = 16,      // Amount of FSM updates to hold step output high
-    MOT_STEP_WAIT_COUNT_0  = 1024,    // Amount of FSM updates to before next step input
-    MOT_STEP_WAIT_COUNT_1  = 640,     // charger motor (0) runs slower to avoid destroying itself
+    MOT_COUNT             = 2,
+    MOT_STARTUP_SCALE     = 3,       // Wait count scaled by this when moving from rest
+    MOT_STARTUP_WAIT_TIME = 10000,   // Time to wait for charge pump to stabilize [us]
+    MOT_STEP_HOLD_TIME    = 64,      // Time to hold step output high [us]
+    MOT_STEP_WAIT_TIME_0  = 2000,    // Time to wait to before next step input [us]
+    MOT_STEP_WAIT_TIME_1  = 1200,    //   charger motor (0) runs slower to avoid destroying itself
 };
 
 typedef enum
@@ -26,7 +27,7 @@ typedef enum
 
 typedef struct
 {
-    uint32_t waitCount;
+    uint64_t startTime;
     int32_t target;
     int32_t position;     // Offset from home position
     MotorState state;
@@ -211,7 +212,7 @@ void motorUpdate(void) {
                                 uint32_t mask = 1 << motStepGpio[motIdx];
                                 gpio_set_mask(mask);
 
-                                motor->waitCount = MOT_STEP_HOLD_COUNT;
+                                motor->startTime = time_us_64();
                                 motor->state = MOT_HOLD;
                             }
                         }
@@ -233,7 +234,7 @@ void motorUpdate(void) {
                             // Wake from sleep
                             gpio_put((motIdx == 0) ? GPIO_MOT_SLP_0 : GPIO_MOT_SLP_1, true);
 
-                            motor->waitCount = MOT_STARTUP_WAIT_COUNT;
+                            motor->startTime = time_us_64();
                             motor->state = MOT_STARTUP_3;
                         }
                         break;
@@ -241,8 +242,7 @@ void motorUpdate(void) {
 
                     case MOT_STARTUP_3:
                     {
-                        --motor->waitCount;
-                        if (motor->waitCount == 0) {
+                        if ((time_us_64() - motor->startTime) > MOT_STARTUP_WAIT_TIME) {
                             motor->active = true;
                             motor->state = MOT_STEP;
                         }
@@ -252,16 +252,9 @@ void motorUpdate(void) {
                     case MOT_HOLD:
                     {
                         // Hold step output high
-                        --motor->waitCount;
-                        if (motor->waitCount == 0) {
+                        if ((time_us_64() - motor->startTime) > MOT_STEP_HOLD_TIME) {
                             uint32_t mask = 1 << motStepGpio[motIdx];
                             gpio_clr_mask(mask);
-
-                            uint32_t waitCount = (motIdx == 0) ? MOT_STEP_WAIT_COUNT_0 : MOT_STEP_WAIT_COUNT_1;
-                            motor->waitCount = waitCount * (1ul << motor->startup);
-                            if (motor->startup > 0) {
-                                --motor->startup;
-                            }
 
                             motor->state = MOT_BACKOFF;
                         }
@@ -271,8 +264,12 @@ void motorUpdate(void) {
                     case MOT_BACKOFF:
                     {
                         // Wait for motor to move before next step input
-                        --motor->waitCount;
-                        if (motor->waitCount == 0) {
+                        uint64_t waitTime = (motIdx == 0) ? MOT_STEP_WAIT_TIME_0 : MOT_STEP_WAIT_TIME_1;
+                        waitTime *= (1ul << motor->startup);
+                        if ((time_us_64() - motor->startTime) > waitTime) {
+                            if (motor->startup > 0) {
+                                --motor->startup;
+                            }
                             motor->state = MOT_STEP;
                         }
                         break;
