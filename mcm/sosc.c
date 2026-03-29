@@ -15,7 +15,7 @@ enum
     SOSC_POWERUP_TIME_1 = 100000,   // Oscillation frequency takes time to settle (decreasing in frequency)
                                     // Does not need until completely settled, since we only look at differences in counts
 
-    SOSC_MEAS_TIME_0    = 100000,   // Frequency measurement duration [us]
+    SOSC_MEAS_TIME_0    = 65000,    // Frequency measurement duration [us]
     SOSC_MEAS_TIME_1    = 50000,
     SOSC_CLKDIV_0       = 1,        // Input clock divider, set to avoid overflow 16 bit counter during measurement duration
     SOSC_CLKDIV_1       = 1,
@@ -28,8 +28,9 @@ enum
 
     SOSC_VAR_MAX        = 5,        // Maximum variation expected between measurements
 
-    SOSC_COUNT_HIST     = 16,       // Number of past measurements to keep for maintaining average of last counts
-    SOSC_VOTE_TH        = 2,        // Consecutive votes required to declare detected
+    SOSC_COUNT_HIST     = 8,        // Number of past measurements to keep for maintaining average of last counts
+    SOSC_VOTE_TH        = 4,        // Consecutive votes required to declare detected
+    SOSC_DET_WAIT_TIME  = 350000,   // Time between measurements [us]
     SOSC_DET_COUNT_TH_0 = 4,        // Count difference from calibrated value for detect vote:
     SOSC_DET_COUNT_TH_1 = 60,       // ?? Hz for sosc0, ?? Hz for sosc1
 };
@@ -38,7 +39,8 @@ typedef struct // Data for one oscillator
 {
     uint16_t idleCounts;
     uint8_t ready     : 1; // Powered on and ready for measurement
-    uint8_t reserved  : 7;
+    uint8_t powerup   : 1; // Powerup requested via soscPowerup
+    uint8_t reserved  : 6;
 } Sosc;
 
 typedef enum
@@ -70,6 +72,7 @@ typedef struct
 
 typedef struct
 {
+    uint64_t waitStartTime;
     int32_t lastCount[SOSC_COUNT_HIST];
     uint8_t lastCountSize;
     uint8_t detectVote;
@@ -90,25 +93,35 @@ static SoscCalFsm soscCalFsm;
 static SoscDeltaFsm soscDeltaFsm;
 static SoscDetFsm soscDetFsm;
 
-// Takes frequency measurement on specified oscillator
-// Counts stored in pointer when done
+void soscPowerup(uint8_t soscIdx) {
+    SoscMeasFsm* fsm = &soscMeasFsm;
+
+    // Turn on the requested oscillator, and others off
+    bool soscEn[SOSC_COUNT] = {};
+    soscEn[soscIdx] = true;
+
+    for (uint8_t i = 0; i < SOSC_COUNT; ++i) {
+        gpio_put(soscEnGpio[i], !soscEn[i]); // For PNP off means base at logic high
+        sosc[i].ready = false;
+        sosc[i].powerup = false;
+    }
+
+    fsm->startTime = time_us_64();
+    sosc[soscIdx].powerup = true;
+}
+
 bool soscMeas(uint16_t* counts, uint8_t soscIdx) {
     SoscMeasFsm* fsm = &soscMeasFsm;
     bool done = false;
     switch (fsm->state) {
         case SOSC_MEAS_INIT:
         {
-            if (!sosc[soscIdx].ready) {
-                // Turn on the requested oscillator, and others off
-                bool soscEn[SOSC_COUNT] = {};
-                soscEn[soscIdx] = true;
-
-                for (uint8_t i = 0; i < SOSC_COUNT; ++i) {
-                    gpio_put(soscEnGpio[i], !soscEn[i]); // For PNP off means base at logic high
-                    sosc[i].ready = false;
-                }
-
-                fsm->startTime = time_us_64();
+            if (sosc[soscIdx].powerup) {
+                // Powerup already requested, skip to wait
+                fsm->state = SOSC_MEAS_POWERUP;
+            }
+            else if (!sosc[soscIdx].ready) {
+                soscPowerup(soscIdx);
                 fsm->state = SOSC_MEAS_POWERUP;
             }
             else {
@@ -123,6 +136,7 @@ bool soscMeas(uint16_t* counts, uint8_t soscIdx) {
             // Wait for oscillators to power on and settle
             if ((time_us_64() - fsm->startTime) > soscPowerupTime[soscIdx]) {
                 sosc[soscIdx].ready = true;
+                sosc[soscIdx].powerup = false;
                 fsm->state = SOSC_MEAS_START;
             }
             break;
@@ -280,7 +294,7 @@ bool soscCounts(int32_t* avgCounts, uint8_t soscIdx) {
             //    Charger ping +-----------+
             //    Measurements <---> <---> <--->
             if (variation0 < SOSC_VAR_MAX && variation1 < SOSC_VAR_MAX) {
-                *avgCounts = ((int32_t)counts + (int32_t)fsm->lastCount0 + (int32_t)fsm->lastCount1) / 3;
+                *avgCounts = (int32_t)counts + (int32_t)fsm->lastCount0 + (int32_t)fsm->lastCount1;
                 return true;
             }
         }
@@ -296,56 +310,62 @@ bool soscDetect(bool* detected, uint8_t soscIdx) {
     SoscDetFsm* fsm = &soscDetFsm;
     bool done = false;
 
-    // Count number of edge transitions during fixed time interval
-    int32_t counts;
-    if (soscCounts(&counts, soscIdx)) {
-        // At startup lastCounts is 0, ignore that
-        if (fsm->lastCountSize == 0) {
-            fsm->lastCount[0] = counts;
-            fsm->lastCountSize = 1;
-        }
-        else {
-            int32_t avgLastCounts = 0;
-            for (uint32_t i = 0; i < fsm->lastCountSize; ++i) {
-                avgLastCounts += fsm->lastCount[i];
-            }
-            avgLastCounts /= fsm->lastCountSize;
-
-            // Phone is placed if frequency increased
-            int32_t countDiff = counts - avgLastCounts;
-            if (countDiff > (int32_t)(soscDetCountTh[soscIdx])) {
-                ++fsm->detectVote;
-
-                // Detected if sufficient consecutive votes
-                if (fsm->detectVote >= SOSC_VOTE_TH) {
-                    // Throw away the measurements as the coil will have changed the next time it returns to home
-                    // and the measured counts will be different
-                    fsm->lastCountSize = 0;
-
-                    fsm->detectVote = 0;
-                    *detected = true;
-                    done = true;
-                }
+    // Wait before taking next measurement
+    if ((time_us_64() - fsm->waitStartTime) > SOSC_DET_WAIT_TIME) {
+        // Count number of edge transitions during fixed time interval
+        int32_t counts;
+        if (soscCounts(&counts, soscIdx)) {
+            // At startup lastCounts is 0, ignore that
+            if (fsm->lastCountSize == 0) {
+                fsm->lastCount[0] = counts;
+                fsm->lastCountSize = 1;
             }
             else {
-                // Shift history forwards
-                if (fsm->lastCountSize < SOSC_COUNT_HIST) {
-                    for (uint32_t i = fsm->lastCountSize; i > 0; --i) {
-                        fsm->lastCount[i] = fsm->lastCount[i - 1];
+                int32_t avgLastCounts = 0;
+                for (uint32_t i = 0; i < fsm->lastCountSize; ++i) {
+                    avgLastCounts += fsm->lastCount[i];
+                }
+                avgLastCounts /= fsm->lastCountSize;
+
+                // Phone is placed if frequency increased
+                int32_t countDiff = counts - avgLastCounts;
+                if (countDiff > (int32_t)(soscDetCountTh[soscIdx])) {
+                    ++fsm->detectVote;
+
+                    // Detected if sufficient consecutive votes
+                    if (fsm->detectVote >= SOSC_VOTE_TH) {
+                        // Throw away the measurements as the coil will have changed the next time it returns to home
+                        // and the measured counts will be different
+                        fsm->lastCountSize = 0;
+
+                        fsm->detectVote = 0;
+                        *detected = true;
+                        done = true;
                     }
-                    fsm->lastCount[0] = counts;
-                    ++fsm->lastCountSize;
                 }
                 else {
-                    for (uint32_t i = (SOSC_COUNT_HIST - 1); i > 0; --i) {
-                        fsm->lastCount[i] = fsm->lastCount[i - 1];
+                    // Shift history forwards
+                    if (fsm->lastCountSize < SOSC_COUNT_HIST) {
+                        for (uint32_t i = fsm->lastCountSize; i > 0; --i) {
+                            fsm->lastCount[i] = fsm->lastCount[i - 1];
+                        }
+                        fsm->lastCount[0] = counts;
+                        ++fsm->lastCountSize;
                     }
-                    fsm->lastCount[0] = counts;
-                }
+                    else {
+                        for (uint32_t i = (SOSC_COUNT_HIST - 1); i > 0; --i) {
+                            fsm->lastCount[i] = fsm->lastCount[i - 1];
+                        }
+                        fsm->lastCount[0] = counts;
 
-                fsm->detectVote = 0;
-                *detected = false;
-                done = true;
+                        // Since history is filled, wait before taking more measurements
+                        fsm->waitStartTime = time_us_64();
+                    }
+
+                    fsm->detectVote = 0;
+                    *detected = false;
+                    done = true;
+                }
             }
         }
     }

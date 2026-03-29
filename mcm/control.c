@@ -14,25 +14,27 @@ enum
 
     THETA_SWEEP_STEP_MAX      = 260, // Number of stepper motor steps, for each "theta step"
     THETA_SWEEP_STEP          = 24,
-    RADIUS_SWEEP_STEP_MAX     = 60,
-    RADIUS_SWEEP_STEP         = 20,
+    RADIUS_SWEEP_STEP_MAX     = 80,
+    RADIUS_SWEEP_STEP         = 15,
 
     // Fine search around the index where max was found
     // Coarse steps |     |     |     |     |
     // Fine steps    <--------->
+
+    MAX_SWEEP_RETRY           = 2,
 
     THETA_COARSE_STEP         = 20, // Coarse steps are 20x the minimum step size
     THETA_COARSE_STEP_MAX     = THETA_SWEEP_STEP_MAX / THETA_COARSE_STEP,
     THETA_COARSE_MIN_COUNT    = 30, // Minimum count difference between max and min counts during coarse sweep to continue to fine sweep
 
     THETA_FINE_STEP           = 2,
-    THETA_FINE_STEP_MAX       = 4 * THETA_COARSE_STEP / THETA_FINE_STEP,
+    THETA_FINE_STEP_MAX       = 2 * THETA_COARSE_STEP / THETA_FINE_STEP,
 
     THETA_ADJUST_STEP         = 2, // When radius sweep couldn't find phone
-    THETA_ADJUST_MAX          = 32,
+    THETA_ADJUST_MAX          = 8,
 
     CHARGE_DET_VOTE           = 1 << 17, // FSM iterations to declare charging
-    CHARGE_DET_TIMEOUT        = 1 << 18, // FSM iterations to check for charging
+    CHARGE_DET_TIMEOUT        = (1 << 17) + (1 << 16),  // FSM iterations to check for charging
 };
 
 typedef enum
@@ -44,7 +46,7 @@ typedef enum
     // Reset <- Charging
 
     // Startup calibration
-    CONTROL_CAL_ENTER = 0,
+    CONTROL_INIT = 0,
     CONTROL_CAL_MOT_0,
     CONTROL_CAL_MOT_1,
 
@@ -71,13 +73,15 @@ typedef struct
     int16_t thetaSteps;
     int16_t radiusSteps;
 
-    uint8_t stepCount;           // Counter
+    uint8_t retryCount;
+    uint8_t stepCount;         // Counter
     uint8_t thetaAdj;          // Theta adjustment count during radius sweep
     int8_t thetaAdjClamp;      // Hit one of the edges in theta adjust, sign is direction to keep stepping in
-    uint8_t nearPhone     : 1;
-    uint8_t enterFine     : 1; // Radius sweep switches from coarse to fine mode
-    uint8_t sweepDir      : 1;
-    uint8_t reserved      : 5;
+
+    uint32_t nearPhone     : 1;
+    uint32_t enterFine     : 1; // Radius sweep switches from coarse to fine mode
+    uint32_t sweepDir      : 1;
+    uint32_t reserved      : 5;
 } Control;
 
 Control control;
@@ -129,22 +133,10 @@ void runControl() {
     Control* fsm = &control;
     switch (fsm->state) {
         // Calibrate
-        case CONTROL_CAL_ENTER:
+        case CONTROL_INIT:
         {
-            if (!dacActive(0) && !dacActive(1)) {
-                // Reset
-                fsm->chargeDetTimeout = 0;
-                fsm->chargeVote = 0;
-                fsm->stepCount = 0;
-                fsm->thetaAdj = 0;
-                fsm->thetaAdjClamp = 0;
-                fsm->nearPhone = false;
-                fsm->enterFine = false;
-                fsm->sweepDir = 0;
-
-                statusSet(STATUS_CAL_0);
-                fsm->state = CONTROL_CAL_MOT_0;
-            }
+            statusSet(STATUS_CAL_0);
+            fsm->state = CONTROL_CAL_MOT_0;
             break;
         }
 
@@ -164,8 +156,17 @@ void runControl() {
             if (motorCalibrate(1)) {
                 fsm->thetaSteps = 0;
 
-                statusSet(STATUS_IDLE);
-                fsm->state = CONTROL_IDLE;
+                if (fsm->retryCount > 0 && fsm->retryCount < MAX_SWEEP_RETRY) {
+                    // If retrying detection, skip idle
+                    statusSet(STATUS_SWEEP_THETA);
+                    fsm->state = CONTROL_SWEEP_THETA_COARSE;
+                }
+                else {
+                    fsm->retryCount = 0;
+
+                    statusSet(STATUS_IDLE);
+                    fsm->state = CONTROL_IDLE;
+                }
             }
             break;
         }
@@ -186,6 +187,8 @@ void runControl() {
         // Search for phone
         case CONTROL_SWEEP_THETA_COARSE:
         {
+            // Coarse sweep runs in the forward direction
+
             if (motorReady(THETA_MOT)) {
                 int32_t counts;
                 if (soscCounts(&counts, 1)) { // Only DAC1 and SOSC1 can be used at the same time
@@ -217,12 +220,12 @@ void runControl() {
 
                         if ((maxVal - minVal) < THETA_COARSE_MIN_COUNT) {
                             // Don't continue sweep if there actually was no phone
-                            motorDisable();
-                            fsm->state = CONTROL_CAL_ENTER;
+                            fsm->retryCount = 0;
+                            fsm->state = CONTROL_INIT;
                         }
                         else {
                             // Step backwards an additional step to do fine serach
-                            int32_t startIdx = maxIdx - 2;
+                            int32_t startIdx = maxIdx + 1;
                             stepTheta(-THETA_COARSE_STEP * (fsm->stepCount - startIdx));
 
                             fsm->state = CONTROL_SWEEP_THETA_FINE;
@@ -240,6 +243,8 @@ void runControl() {
 
         case CONTROL_SWEEP_THETA_FINE:
         {
+            // Fine sweep runs in the reverse direction
+
             if (motorReady(THETA_MOT)) {
                 int32_t counts;
                 if (soscCounts(&counts, 1)) {
@@ -249,7 +254,7 @@ void runControl() {
                     bool doneSweep = fsm->stepCount >= THETA_FINE_STEP_MAX;
                     bool canStep = false;
                     if (!doneSweep) {
-                        canStep = stepTheta(THETA_FINE_STEP);
+                        canStep = stepTheta(-THETA_FINE_STEP);
                     }
 
                     if (!canStep || doneSweep) {
@@ -265,9 +270,19 @@ void runControl() {
                         }
 
                         // Take extra 5 steps backwards since the charging coil and the sosc coil are offset
-                        stepTheta(-THETA_FINE_STEP * (fsm->stepCount - maxIdx) - 5);
+                        stepTheta(THETA_FINE_STEP * (fsm->stepCount - maxIdx) - 5);
                         fsm->stepCount = 0;
 
+                        // Reset variables for radius sweep
+                        fsm->chargeDetTimeout = 0;
+                        fsm->chargeVote = 0;
+
+                        fsm->thetaAdj = 0;
+                        fsm->thetaAdjClamp = 0;
+
+                        fsm->nearPhone = false;
+                        fsm->enterFine = false;
+                        fsm->sweepDir = 0;
                         fsm->state = CONTROL_SWEEP_RADIUS;
                     }
                     else {
@@ -285,9 +300,9 @@ void runControl() {
                 int32_t stepSign = (fsm->sweepDir == 0) ? 1 : -1;
 
                 if (gpio_get(GPIO_CHARGING)) {
-                    // When charging light first turns on, go back few steps and slowly step forwards
+                    // When charging light first turns on, go back and slowly step forwards
                     if (!fsm->nearPhone) {
-                        stepRadius(-1 * stepSign * 4);
+                        stepRadius(-1 * stepSign * step);
 
                         fsm->chargeDetTimeout = 0;
                         fsm->nearPhone = true;
@@ -297,6 +312,7 @@ void runControl() {
                         ++fsm->chargeVote;
                         if (fsm->chargeVote > CHARGE_DET_VOTE) { // Charging light needs to remain on, not flashing
                             fsm->chargeVote = 0;
+                            fsm->retryCount = 0;
 
                             motorDisable(); // Turn off motors to save power
 
@@ -309,15 +325,16 @@ void runControl() {
                     fsm->chargeVote = 0;
                 }
 
-                // When first entering fine mode, need to wait extra time for charging light to clear
-                uint32_t timeout = CHARGE_DET_TIMEOUT;
-                if (fsm->enterFine) {
-                    timeout *= 4;
-                }
-
-                // Didn't find phone, keep sweeping
                 ++fsm->chargeDetTimeout;
-                if (fsm->chargeDetTimeout > timeout) {
+                if (fsm->enterFine) {
+                    // When first entering fine mode, need to wait extra time for charging light to clear
+                    if (fsm->chargeDetTimeout > (4 * CHARGE_DET_TIMEOUT)) {
+                        fsm->chargeDetTimeout = 0;
+                        fsm->enterFine = false;
+                    }
+                }
+                else if (fsm->chargeDetTimeout > CHARGE_DET_TIMEOUT) {
+                    // Didn't find phone, keep sweeping
                     fsm->chargeDetTimeout = 0;
                     fsm->enterFine = false;
 
@@ -333,9 +350,9 @@ void runControl() {
                         //         ->
                         //            ->
                         if (fsm->thetaAdj >= THETA_ADJUST_MAX) {
-                            // Give up
-                            motorDisable();
-                            fsm->state = CONTROL_CAL_ENTER;
+                            // Give up, try sweep again or return to idle
+                            ++fsm->retryCount;
+                            fsm->state = CONTROL_INIT;
                         }
                         else {
                             int32_t step = THETA_ADJUST_STEP * (fsm->thetaAdj + 1) * stepSign;
@@ -371,8 +388,10 @@ void runControl() {
             if (!gpio_get(GPIO_CHARGING)) {
                 ++fsm->chargeVote;
                 if (fsm->chargeVote > CHARGE_DET_VOTE) {
+                    soscPowerup(0);
+
                     fsm->chargeVote = 0;
-                    fsm->state = CONTROL_CAL_ENTER;
+                    fsm->state = CONTROL_INIT;
                 }
             }
             else {
@@ -383,7 +402,7 @@ void runControl() {
 
         default:
         {
-            fsm->state = CONTROL_CAL_ENTER;
+            fsm->state = CONTROL_INIT;
             break;
         }
     }

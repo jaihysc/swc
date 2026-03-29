@@ -4,7 +4,11 @@
 // Configures hardware
 void soscInit(void);
 
-// Takes frequency measurement
+// Powers up specified oscillator
+void soscPowerup(uint8_t soscIdx);
+
+// Takes frequency measurement on specified oscillator
+// Counts stored in pointer when done
 bool soscMeas(uint16_t* counts, uint8_t soscIdx);
 
 // Determines oscillator frequency when no phones present
