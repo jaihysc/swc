@@ -15,7 +15,7 @@ enum
     SOSC_POWERUP_TIME_1 = 2000000,  // Oscillation frequency takes time to settle (decreasing in frequency)
 
     SOSC_MEAS_TIME_0    = 100000,   // Frequency measurement duration [us]
-    SOSC_MEAS_TIME_1    = 50000,
+    SOSC_MEAS_TIME_1    = 60000,
     SOSC_CLKDIV_0       = 1,        // Input clock divider, set to avoid overflow 16 bit counter during measurement duration
     SOSC_CLKDIV_1       = 1,
 
@@ -27,7 +27,7 @@ enum
 
     SOSC_VAR_MAX        = 8,        // Maximum variation expected between measurements
 
-    SOSC_COUNT_HIST     = 8,        // Number of past measurements to keep for maintaining average of last counts
+    SOSC_COUNT_HIST     = 4,        // Number of past measurements to keep for maintaining average of last counts
     SOSC_VOTE_TH        = 4,        // Consecutive votes required to declare detected
     SOSC_DET_WAIT_TIME  = 500000,   // Time between measurements [us]
     SOSC_DET_COUNT_TH_0 = 4,        // Count difference from calibrated value for detect vote:

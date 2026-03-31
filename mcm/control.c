@@ -20,16 +20,23 @@ enum
     // Fine search around the index where max was found
     // Coarse steps |     |     |     |     |
     // Fine steps    <--------->
+    //
+    // The fine sweep range (width) is based on how spread the coarse sweep data is
+    //                                | <-- Max in coarse sweep
+    // Coarse sweep steps |     |     |     |     |
+    //                     <--Width--> <--Width-->
 
     MAX_SWEEP_RETRY           = 2,
 
     THETA_COARSE_STEP         = 20, // Coarse steps are 20x the minimum step size
     THETA_COARSE_STEP_MAX     = THETA_SWEEP_STEP_MAX / THETA_COARSE_STEP,
-    THETA_COARSE_MIN_COUNT    = 30, // Minimum count difference between max and min counts during coarse sweep to continue to fine sweep
 
+    THETA_FINE_WIDTH_MAX      = 4,  // Coarse steps around max found in coarse sweep
+    THETA_FINE_WIDTH_COUNT    = 16, // For counts near maximum, minimum count difference from maximum to expand width
     THETA_FINE_STEP           = 2,
-    THETA_FINE_STEP_MAX       = 2 * THETA_COARSE_STEP / THETA_FINE_STEP,
+    THETA_FINE_STEP_MAX       = 2 * THETA_FINE_WIDTH_MAX * THETA_COARSE_STEP / THETA_FINE_STEP,
 
+    THETA_ADJUST_MIN_COUNT    = 30, // Minimum count difference between max and min counts during coarse sweep to enable theta adjustment and retry
     THETA_ADJUST_STEP         = 2, // When radius sweep couldn't find phone
     THETA_ADJUST_MAX          = 8,
 
@@ -75,13 +82,15 @@ typedef struct
 
     uint8_t retryCount;
     uint8_t stepCount;         // Counter
-    uint8_t thetaAdj;          // Theta adjustment count during radius sweep
+    uint8_t fineSweepWidth;    // Calculated during coarse sweep, used by fine sweep
+    uint8_t thetaAdjCount;     // Theta adjustment count during radius sweep
     int8_t thetaAdjClamp;      // Hit one of the edges in theta adjust, sign is direction to keep stepping in
 
     uint32_t nearPhone     : 1;
     uint32_t enterFine     : 1; // Radius sweep switches from coarse to fine mode
     uint32_t sweepDir      : 1;
-    uint32_t reserved      : 5;
+    uint32_t doThetaAdj    : 1; // Set during coarse sweep, used by radius sweep
+    uint32_t reserved      : 28;
 } Control;
 
 Control control;
@@ -135,6 +144,8 @@ void runControl() {
         // Calibrate
         case CONTROL_INIT:
         {
+            soscPowerup(0);
+
             statusSet(STATUS_CAL_0);
             fsm->state = CONTROL_CAL_MOT_0;
             break;
@@ -218,20 +229,41 @@ void runControl() {
                             }
                         }
 
-                        if ((maxVal - minVal) < THETA_COARSE_MIN_COUNT) {
-                            // Don't continue sweep if there actually was no phone
-                            fsm->retryCount = 0;
-                            fsm->state = CONTROL_INIT;
+                        // Calculate width of fine sweep
+                        uint32_t leftWidth = 0;
+                        for (int32_t i = maxIdx - 1; i >= 0; --i) {
+                            if ((maxVal - fsm->thetaCounts.coarse[i]) > THETA_FINE_WIDTH_COUNT) {
+                                break;
+                            }
+                            ++leftWidth;
                         }
-                        else {
-                            // Step backwards an additional step to do fine serach
-                            int32_t startIdx = maxIdx + 1;
-                            stepTheta(-THETA_COARSE_STEP * (fsm->stepCount - startIdx));
 
-                            fsm->state = CONTROL_SWEEP_THETA_FINE;
+                        uint32_t rightWidth = 0;
+                        for (int32_t i = maxIdx + 1; i < (fsm->stepCount + 1); ++i) {
+                            if ((maxVal - fsm->thetaCounts.coarse[i]) > THETA_FINE_WIDTH_COUNT) {
+                                break;
+                            }
+                            ++rightWidth;
                         }
+
+                        fsm->fineSweepWidth = (leftWidth > rightWidth) ? leftWidth : rightWidth;
+                        if (fsm->fineSweepWidth > THETA_FINE_WIDTH_MAX) {
+                            fsm->fineSweepWidth = THETA_FINE_WIDTH_MAX;
+                        }
+                        else if (fsm->fineSweepWidth <= 0) {
+                            fsm->fineSweepWidth = 1;
+                        }
+
+                        // Don't continue to theta adjustment if we aren't that sure there is a phone
+                        fsm->doThetaAdj = (maxVal - minVal) > THETA_ADJUST_MIN_COUNT;
+
+                        // Step backwards an additional step to do fine serach
+                        int32_t startIdx = maxIdx + fsm->fineSweepWidth;
+                        stepTheta(-THETA_COARSE_STEP * (fsm->stepCount - startIdx));
 
                         fsm->stepCount = 0;
+
+                        fsm->state = CONTROL_SWEEP_THETA_FINE;
                     }
                     else {
                         ++fsm->stepCount;
@@ -251,21 +283,22 @@ void runControl() {
                     // Measure out frequency counts at all fine step positions
                     fsm->thetaCounts.fine[fsm->stepCount] = counts;
 
-                    bool doneSweep = fsm->stepCount >= THETA_FINE_STEP_MAX;
+                    bool doneSweep = fsm->stepCount >= (2 * fsm->fineSweepWidth * THETA_COARSE_STEP / THETA_FINE_STEP);
                     bool canStep = false;
                     if (!doneSweep) {
                         canStep = stepTheta(-THETA_FINE_STEP);
                     }
 
                     if (!canStep || doneSweep) {
-                        // Find the maximum in the counts, and do fine search around there
-                        // Also find the minimum
+                        // Find the maximum in the counts, do sweep with the charger
                         int32_t maxIdx = 0;
                         int32_t maxVal = 0;
                         for (int32_t i = 0; i < (fsm->stepCount + 1); ++i) {
-                            if (fsm->thetaCounts.fine[i] > maxVal) {
+                            int32_t val = fsm->thetaCounts.fine[i];
+                            // Greater than or equal, we want the rightmost maximum since theta adjust moves left first
+                            if (val >= maxVal) {
                                 maxIdx = i;
-                                maxVal = fsm->thetaCounts.fine[i];
+                                maxVal = val;
                             }
                         }
 
@@ -277,7 +310,7 @@ void runControl() {
                         fsm->chargeDetTimeout = 0;
                         fsm->chargeVote = 0;
 
-                        fsm->thetaAdj = 0;
+                        fsm->thetaAdjCount = 0;
                         fsm->thetaAdjClamp = 0;
 
                         fsm->nearPhone = false;
@@ -351,13 +384,17 @@ void runControl() {
                         //  ------>
                         //         ->
                         //            ->
-                        if (fsm->thetaAdj >= THETA_ADJUST_MAX) {
+                        if (!fsm->doThetaAdj) {
+                            // Don't do theta adjustment, give up immediately
+                            fsm->state = CONTROL_INIT;
+                        }
+                        else if (fsm->thetaAdjCount >= THETA_ADJUST_MAX) {
                             // Give up, try sweep again or return to idle
                             ++fsm->retryCount;
                             fsm->state = CONTROL_INIT;
                         }
                         else {
-                            int32_t step = THETA_ADJUST_STEP * (fsm->thetaAdj + 1) * stepSign;
+                            int32_t step = THETA_ADJUST_STEP * (fsm->thetaAdjCount + 1) * stepSign;
                             int32_t newThetaStep = fsm->thetaSteps + step;
 
                             if (fsm->thetaAdjClamp != 0) {
@@ -373,7 +410,7 @@ void runControl() {
                                 stepTheta(step);
                             }
 
-                            ++fsm->thetaAdj;
+                            ++fsm->thetaAdjCount;
                         }
 
                         fsm->sweepDir = ~fsm->sweepDir;
@@ -390,8 +427,6 @@ void runControl() {
             if (!gpio_get(GPIO_CHARGING)) {
                 ++fsm->chargeVote;
                 if (fsm->chargeVote > CHARGE_DET_VOTE) {
-                    soscPowerup(0);
-
                     fsm->chargeVote = 0;
                     fsm->state = CONTROL_INIT;
                 }
