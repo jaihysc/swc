@@ -1,6 +1,8 @@
 #ifndef MOTOR_H
 #define MOTOR_H
 
+int32_t motorPosition(uint8_t motIdx);
+
 // Turns off motors to save power
 void motorDisable(void);
 

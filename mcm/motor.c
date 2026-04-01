@@ -53,6 +53,10 @@ static MotorFsm motorFsm;
 static uint8_t motDirGpio[MOT_COUNT] = {GPIO_MOT_DIR_0, GPIO_MOT_DIR_1};
 static uint8_t motStepGpio[MOT_COUNT] = {GPIO_MOT_STEP_0, GPIO_MOT_STEP_1};
 
+int32_t motorPosition(uint8_t motIdx) {
+    return motorFsm.motor[motIdx].position;
+}
+
 void motorDisable(void) {
     gpio_put(GPIO_MOT_SLP_0, false); // Active low
     gpio_put(GPIO_MOT_SLP_1, false);
@@ -68,12 +72,6 @@ bool motorReady(uint8_t motIdx) {
 
 void motorMove(uint8_t motIdx, int32_t steps) {
     motorFsm.motor[motIdx].target = steps;
-}
-
-bool motorMoveHome(uint8_t motIdx) {
-    int32_t pos = motorFsm.motor[motIdx].position;
-    motorFsm.motor[motIdx].target = -1 * pos;
-    return pos == 0;
 }
 
 bool motorCalibrate(uint8_t motIdx) {
