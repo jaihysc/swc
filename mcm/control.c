@@ -90,6 +90,23 @@ typedef struct
     uint8_t reserved      : 5;
 } Control;
 
+int32_t coarseCorrFact[THETA_COARSE_STEP_MAX + 1] = { // Corrects offsets in measured counts at coarse positions
+   -20,
+   -11,
+    -7,
+     0,
+    -2,
+    -2,
+    -3,
+    -4,
+    -5,
+   -10,
+   -12,
+   -17,
+   -22,
+   -29
+};
+
 Control control;
 
 // Tries to move theta by provided number of THETA STEPS, true if moved
@@ -209,7 +226,7 @@ void runControl() {
                 int32_t counts;
                 if (soscCounts(&counts, 1)) { // Only DAC1 and SOSC1 can be used at the same time
                     // Measure out frequency counts at all coarse step positions
-                    fsm->thetaCountsCoarse[fsm->coarseIdx] = counts;
+                    fsm->thetaCountsCoarse[fsm->coarseIdx] = counts + coarseCorrFact[fsm->coarseIdx];
 
                     bool doneSweep = fsm->coarseIdx >= THETA_COARSE_STEP_MAX;
                     bool canStep = false;
